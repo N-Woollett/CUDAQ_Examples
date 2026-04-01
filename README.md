@@ -1,2 +1,2 @@
-# CUDAQ_Examples
-Example projects and experiments using NVIDIA's CUDAQ hybrid quantum-classical programming framework
+# CUDA-Q_examples
+Example projects and experiments using NVIDIA's CUDA-Q hybrid quantum-classical programming framework
