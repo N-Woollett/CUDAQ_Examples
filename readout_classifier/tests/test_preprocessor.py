@@ -28,23 +28,45 @@ class TestStandardiseFitTransform:
     """Training-mode (scaler=None) behaviour."""
 
     def test_output_shape_matches_input(self, iq_train):
+        """Standardising should not change the array dimensions.
+
+        Expected: output shape equals input shape (N, 2).
+        """
         scaled, _ = standardise(iq_train)
         assert scaled.shape == iq_train.shape
 
     def test_output_has_zero_mean(self, iq_train):
+        """Z-score standardisation should centre each feature to zero.
+
+        Expected: per-feature mean of the scaled output is 0.0.
+        """
         scaled, _ = standardise(iq_train)
         np.testing.assert_allclose(scaled.mean(axis=0), 0.0, atol=1e-12)
 
     def test_output_has_unit_std(self, iq_train):
+        """Z-score standardisation should scale each feature to unit variance.
+
+        Expected: per-feature standard deviation of the scaled output is 1.0.
+        """
         scaled, _ = standardise(iq_train)
         np.testing.assert_allclose(scaled.std(axis=0), 1.0, atol=1e-12)
 
     def test_scaler_records_mu_and_sigma(self, iq_train):
+        """The returned scaler should store the training set statistics.
+
+        Expected: scaler.mu equals np.mean(iq_train, axis=0) and
+        scaler.sigma equals np.std(iq_train, axis=0).
+        """
         _, scaler = standardise(iq_train)
         np.testing.assert_allclose(scaler.mu, iq_train.mean(axis=0))
         np.testing.assert_allclose(scaler.sigma, iq_train.std(axis=0))
 
     def test_scaler_is_namedtuple(self, iq_train):
+        """The scaler should be a StandardScaler NamedTuple.
+
+        Expected: scaler is an instance of StandardScaler with 'mu' and
+        'sigma' attributes.
+        """
         _, scaler = standardise(iq_train)
         assert isinstance(scaler, StandardScaler)
         assert hasattr(scaler, "mu")
@@ -57,6 +79,13 @@ class TestStandardiseTransformOnly:
     """Inference-mode — apply a pre-fitted scaler to new data."""
 
     def test_uses_training_statistics(self, iq_train, iq_test):
+        """Passing a pre-fitted scaler should apply the training-set
+        statistics rather than recomputing them from the new data.
+
+        Expected: the returned scaler is the same object passed in, and
+        the output equals (iq_test - mu) / sigma computed from the
+        training set.
+        """
         _, scaler = standardise(iq_train)
         scaled_test, returned_scaler = standardise(iq_test, scaler=scaler)
 
@@ -68,8 +97,13 @@ class TestStandardiseTransformOnly:
         np.testing.assert_allclose(scaled_test, expected)
 
     def test_test_set_not_zero_mean(self, iq_train, iq_test):
-        """Test data should generally NOT have exactly zero mean — that
-        would indicate it was re-fitted (data leakage)."""
+        """Applying the training scaler to a test set drawn from a
+        different seed should not produce exactly zero mean.
+
+        Expected: per-feature mean of the scaled test set is not close
+        to 0.0 (atol=0.05), confirming that the statistics were not
+        recomputed (which would indicate data leakage).
+        """
         _, scaler = standardise(iq_train)
         scaled_test, _ = standardise(iq_test, scaler=scaler)
 
@@ -86,6 +120,12 @@ class TestNoDataLeakage:
     any val/test data passed later."""
 
     def test_scaler_unchanged_after_transform(self, iq_train, iq_test):
+        """Transforming new data with an existing scaler must not mutate
+        the scaler's stored statistics.
+
+        Expected: scaler.mu and scaler.sigma are identical before and
+        after transforming the test set.
+        """
         _, scaler_before = standardise(iq_train)
         mu_copy = scaler_before.mu.copy()
         sigma_copy = scaler_before.sigma.copy()
@@ -101,15 +141,27 @@ class TestNoDataLeakage:
 class TestEdgeCases:
 
     def test_rejects_1d_input(self):
+        """Standardise requires a 2-D array; a 1-D vector is invalid.
+
+        Expected: raises ValueError mentioning '2-D'.
+        """
         with pytest.raises(ValueError, match="2-D"):
             standardise(np.array([1.0, 2.0, 3.0]))
 
     def test_rejects_3d_input(self):
+        """Standardise requires a 2-D array; a 3-D tensor is invalid.
+
+        Expected: raises ValueError mentioning '2-D'.
+        """
         with pytest.raises(ValueError, match="2-D"):
             standardise(np.zeros((2, 3, 4)))
 
     def test_rejects_constant_feature(self):
-        # Column 1 is constant → std == 0 → should raise.
+        """A feature with zero variance would cause division by zero.
+
+        Expected: raises ValueError mentioning 'zero standard deviation'
+        when one column is constant.
+        """
         data = np.column_stack([
             np.arange(10, dtype=float),
             np.ones(10),
@@ -118,14 +170,21 @@ class TestEdgeCases:
             standardise(data)
 
     def test_single_feature(self):
-        """Works for (N, 1) data (e.g. amplitude-only readout)."""
+        """Standardise should work for single-feature (N, 1) data.
+
+        Expected: output has zero mean and unit standard deviation.
+        """
         data = np.arange(100, dtype=float).reshape(-1, 1)
         scaled, scaler = standardise(data)
         np.testing.assert_allclose(scaled.mean(), 0.0, atol=1e-12)
         np.testing.assert_allclose(scaled.std(), 1.0, atol=1e-12)
 
     def test_many_features(self):
-        """Works for (N, k) with k > 2."""
+        """Standardise should generalise to (N, k) data with k > 2.
+
+        Expected: output shape is (200, 5) with per-feature zero mean
+        and unit standard deviation.
+        """
         rng = np.random.default_rng(7)
         data = rng.normal(size=(200, 5))
         scaled, scaler = standardise(data)
@@ -140,6 +199,14 @@ class TestIntegrationWithSimulator:
     """Round-trip: generate → standardise → check statistics."""
 
     def test_standardise_simulated_iq(self):
+        """Generate IQ data with the simulator, standardise, and verify
+        that the training set is perfectly centred and the test set
+        retains the correct shape when transformed with the training
+        scaler.
+
+        Expected: training set has per-feature mean 0.0 and std 1.0;
+        test set shape is unchanged.
+        """
         from readout_classifier.src.iq_simulator import generate_iq_data
         import json
         from pathlib import Path
@@ -171,41 +238,72 @@ class TestAngleEncodeBasic:
     """Core π·tanh mapping properties."""
 
     def test_output_shape_matches_input(self, iq_train):
+        """Angle encoding is element-wise and should not alter dimensions.
+
+        Expected: output shape equals input shape (N, 2).
+        """
         scaled, _ = standardise(iq_train)
         encoded = angle_encode(scaled)
         assert encoded.shape == scaled.shape
 
     def test_all_values_within_minus_pi_to_pi(self, iq_train):
+        """π·tanh maps all real values into the open interval (-π, π).
+
+        Expected: every element of the encoded output is strictly
+        between -π and π.
+        """
         scaled, _ = standardise(iq_train)
         encoded = angle_encode(scaled)
         assert np.all(encoded > -np.pi)
         assert np.all(encoded < np.pi)
 
     def test_zero_maps_to_zero(self):
+        """tanh(0) = 0, so zero-valued inputs should encode to exactly 0.
+
+        Expected: all output elements are 0.0.
+        """
         data = np.zeros((5, 2))
         encoded = angle_encode(data)
         np.testing.assert_allclose(encoded, 0.0)
 
     def test_monotonically_increasing(self):
-        """π·tanh is strictly increasing, so order must be preserved."""
+        """π·tanh is a strictly increasing function, so the relative
+        ordering of input values must be preserved after encoding.
+
+        Expected: consecutive differences along a sorted column are
+        all positive.
+        """
         x = np.linspace(-5, 5, 100).reshape(-1, 1)
         encoded = angle_encode(x)
         assert np.all(np.diff(encoded, axis=0) > 0)
 
     def test_antisymmetric(self):
-        """tanh is an odd function, so angle_encode(-x) == -angle_encode(x)."""
+        """tanh is an odd function, so negating the input should negate
+        the output.
+
+        Expected: angle_encode(-x) equals -angle_encode(x) element-wise.
+        """
         rng = np.random.default_rng(42)
         x = rng.normal(size=(50, 2))
         np.testing.assert_allclose(angle_encode(-x), -angle_encode(x))
 
     def test_large_values_saturate_near_pi(self):
+        """For very large inputs tanh saturates at ±1, so the encoded
+        values should approach ±π.
+
+        Expected: encoding ±100 yields values within 1e-10 of ±π.
+        """
         large = np.array([[100.0, -100.0]])
         encoded = angle_encode(large)
         np.testing.assert_allclose(encoded[0, 0],  np.pi, atol=1e-10)
         np.testing.assert_allclose(encoded[0, 1], -np.pi, atol=1e-10)
 
     def test_exact_value_at_one(self):
-        """Verify π·tanh(1) ≈ 0.7616·π."""
+        """Verify the encoding at ±1 against the analytic formula.
+
+        Expected: angle_encode([[1, -1]]) equals π·tanh([[1, -1]])
+        (≈ [+0.7616π, −0.7616π]).
+        """
         data = np.array([[1.0, -1.0]])
         encoded = angle_encode(data)
         expected = np.pi * np.tanh(np.array([[1.0, -1.0]]))
@@ -215,20 +313,36 @@ class TestAngleEncodeBasic:
 class TestAngleEncodeEdgeCases:
 
     def test_rejects_1d_input(self):
+        """angle_encode requires a 2-D array; a 1-D vector is invalid.
+
+        Expected: raises ValueError mentioning '2-D'.
+        """
         with pytest.raises(ValueError, match="2-D"):
             angle_encode(np.array([1.0, 2.0]))
 
     def test_rejects_3d_input(self):
+        """angle_encode requires a 2-D array; a 3-D tensor is invalid.
+
+        Expected: raises ValueError mentioning '2-D'.
+        """
         with pytest.raises(ValueError, match="2-D"):
             angle_encode(np.zeros((2, 3, 4)))
 
     def test_single_feature(self):
+        """angle_encode should handle (N, 1) single-feature data.
+
+        Expected: output shape is (3, 1) and all values lie in (-π, π).
+        """
         data = np.array([[0.0], [1.0], [-1.0]])
         encoded = angle_encode(data)
         assert encoded.shape == (3, 1)
         assert np.all(np.abs(encoded) < np.pi)
 
     def test_many_features(self):
+        """angle_encode should generalise to (N, k) data with k > 2.
+
+        Expected: output shape is (200, 5) and all values lie in (-π, π).
+        """
         rng = np.random.default_rng(7)
         data = rng.normal(size=(200, 5))
         encoded = angle_encode(data)
@@ -242,6 +356,12 @@ class TestFullPipelineIntegration:
     """End-to-end: generate IQ → standardise → angle_encode."""
 
     def test_pipeline(self):
+        """Run the full preprocessing pipeline: generate synthetic IQ
+        data, standardise using training statistics, then angle-encode.
+
+        Expected: both training and test angle arrays have 2 features
+        and every value is strictly within (-π, π).
+        """
         from readout_classifier.src.iq_simulator import generate_iq_data
         import json
         from pathlib import Path
