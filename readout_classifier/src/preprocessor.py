@@ -3,6 +3,7 @@
 from typing import NamedTuple, Optional
 
 import numpy as np
+from sklearn.decomposition import PCA
 
 
 class StandardScaler(NamedTuple):
@@ -112,3 +113,45 @@ def angle_encode(iq_scaled: np.ndarray) -> np.ndarray:
         )
 
     return np.pi * np.tanh(iq_scaled)
+
+
+def pca_rotate(
+    iq_data: np.ndarray,
+    pca: Optional[PCA] = None,
+    n_components: int = 2
+) -> tuple[np.ndarray, PCA]:
+    """Apply PCA rotation to IQ data to align the maximum-variance axis with I.
+
+    When ``pca`` is *None* (the default), a PCA object is fitted on the
+    ``iq_data`` — this is the mode used for the **training** set. When a
+    ``pca`` is provided (obtained from a previous call on the training set),
+    that object is re-used to transform the validation / test data, preventing
+    data leakage.
+
+    Args:
+        iq_data (np.ndarray): IQ samples with shape ``(N, n_features)``.
+        pca (PCA | None): If *None*, fit-and-transform
+            (training mode). If provided, transform only (inference
+            mode).
+        n_components (int): Number of components to keep. Defaults to 2.
+
+    Returns:
+        tuple[np.ndarray, PCA]: A tuple of:
+            - **rotated** — the PCA-transformed data, shape ``(N, n_components)``.
+            - **pca** — the fitted :class:`PCA` object.
+
+    Raises:
+        ValueError: If ``iq_data`` is not a 2-D array.
+    """
+    if iq_data.ndim != 2:
+        raise ValueError(
+            f"iq_data must be 2-D (N, n_features), got shape {iq_data.shape}"
+        )
+
+    if pca is None:
+        pca = PCA(n_components=n_components)
+        pca.fit(iq_data)
+
+    rotated = pca.transform(iq_data)
+    return rotated, pca
+

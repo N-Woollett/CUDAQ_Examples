@@ -3,7 +3,9 @@
 import numpy as np
 import pytest
 
-from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode
+from sklearn.decomposition import PCA
+
+from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode, pca_rotate
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
@@ -388,3 +390,50 @@ class TestFullPipelineIntegration:
             assert angles.shape[1] == 2
             assert np.all(angles > -np.pi)
             assert np.all(angles < np.pi)
+
+
+# ─── pca_rotate ──────────────────────────────────────────────────────────────
+
+class TestPCARotate:
+    """Tests for the pca_rotate function."""
+
+    def test_fit_transform(self, iq_train):
+        """Test that passing pca=None fits a new PCA and transforms the data.
+
+        Expected: returns a fitted PCA object and the transformed data
+        with the same shape as the input. The variance of the first
+        component should be greater than or equal to the second.
+        """
+        rotated, pca = pca_rotate(iq_train)
+        
+        assert isinstance(pca, PCA)
+        assert rotated.shape == iq_train.shape
+        # The components should be orthogonal and variances sorted (PCA properties)
+        variances = np.var(rotated, axis=0)
+        assert variances[0] >= variances[1]
+
+    def test_transform_only(self, iq_train, iq_test):
+        """Test that passing an existing PCA transforms without refitting.
+
+        Expected: the returned PCA object is the exact same instance passed
+        in, and the output matches a direct transform() call on that PCA.
+        """
+        _, pca_train = pca_rotate(iq_train)
+        
+        rotated_test, pca_returned = pca_rotate(iq_test, pca=pca_train)
+        
+        assert pca_returned is pca_train
+        assert rotated_test.shape == iq_test.shape
+        
+        # Manually transform to ensure no refitting happened
+        expected_rotated = pca_train.transform(iq_test)
+        np.testing.assert_allclose(rotated_test, expected_rotated)
+
+    def test_rejects_1d_input(self):
+        """pca_rotate requires a 2-D array; a 1-D vector is invalid.
+
+        Expected: raises ValueError mentioning '2-D'.
+        """
+        with pytest.raises(ValueError, match="2-D"):
+            pca_rotate(np.array([1.0, 2.0, 3.0]))
+
