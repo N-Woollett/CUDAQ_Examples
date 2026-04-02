@@ -1,0 +1,10 @@
+{
+  "SNR": 3.0,
+  "sigma": 1.0,
+  "p_thermal": 0.02,
+  "T1_over_tmeas": 10.0,
+  "blob_angle": 0.0,
+  "n_train": 10000,
+  "n_test": 2000,
+  "seed": 42
+}
