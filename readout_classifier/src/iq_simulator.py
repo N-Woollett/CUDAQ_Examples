@@ -2,7 +2,7 @@ import json
 import numpy as np
 import warnings
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 try:
     import cupy as cp
@@ -259,6 +259,41 @@ def generate_iq_data_gpu(
         iq = iq @ rot.T
 
     return iq, labels
+
+
+def save_dataset(path: Union[str, Path], iq: np.ndarray, labels: np.ndarray, params: Dict) -> None:
+    """
+    Save the generated IQ data, labels, and the simulation parameters to a NumPy .npz archive.
+
+    Args:
+        path (Union[str, Path]): Path to save the dataset.
+        iq (np.ndarray): Synthetic single-shot readings in the IQ plane.
+        labels (np.ndarray): Ground truth states.
+        params (Dict): Dictionary of physical parameters used to generate the data.
+    """
+    np.savez(
+        path,
+        iq=iq,
+        labels=labels,
+        params=json.dumps(params)
+    )
+
+
+def load_dataset(path: Union[str, Path]) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Load IQ data, labels, and simulation parameters from a NumPy .npz archive.
+
+    Args:
+        path (Union[str, Path]): Path to the saved dataset.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray, Dict]: A tuple containing the IQ data array, labels array, and parameters dictionary.
+    """
+    with np.load(path) as data:
+        iq = data["iq"]
+        labels = data["labels"]
+        params = json.loads(str(data["params"].item()))
+    return iq, labels, params
 
 
 def main():
