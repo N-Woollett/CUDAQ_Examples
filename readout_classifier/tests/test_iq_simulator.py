@@ -8,7 +8,12 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from readout_classifier.src.iq_simulator import generate_iq_data, generate_iq_data_gpu
+from readout_classifier.src.iq_simulator import (
+    generate_iq_data,
+    generate_iq_data_gpu,
+    save_dataset,
+    load_dataset,
+)
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
@@ -488,3 +493,39 @@ class TestEdgeCases:
         iq, labels = generate_iq_data(100_000, simple_params)
         assert iq.shape == (100_000, 2)
         assert labels.shape == (100_000,)
+
+
+# ─── serialization ──────────────────────────────────────────────────────────
+
+class TestSerialization:
+    """Verify that datasets can be saved and loaded without data corruption."""
+
+    def test_save_and_load_dataset(self, tmp_path, simple_params):
+        """Saving and subsequently loading a dataset should return
+        identical records with correct data types.
+
+        Expected: Loaded IQ array, labels array, and parameters dict match.
+        """
+        iq, labels = generate_iq_data(500, simple_params)
+        save_path = tmp_path / "test_dataset.npz"
+        
+        save_dataset(save_path, iq, labels, simple_params)
+        assert save_path.exists()
+        
+        loaded_iq, loaded_labels, loaded_params = load_dataset(save_path)
+
+        np.testing.assert_array_equal(iq, loaded_iq)
+        np.testing.assert_array_equal(labels, loaded_labels)
+        assert simple_params == loaded_params
+
+    def test_load_dataset_string_path(self, tmp_path, simple_params):
+        """The dataset functions should accept string paths as well as Path objects."""
+        iq, labels = generate_iq_data(100, simple_params)
+        save_path_str = str(tmp_path / "test_string_path.npz")
+        
+        save_dataset(save_path_str, iq, labels, simple_params)
+        loaded_iq, loaded_labels, loaded_params = load_dataset(save_path_str)
+        
+        np.testing.assert_array_equal(iq, loaded_iq)
+        np.testing.assert_array_equal(labels, loaded_labels)
+        assert simple_params == loaded_params
