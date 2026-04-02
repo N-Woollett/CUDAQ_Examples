@@ -5,7 +5,7 @@ import pytest
 
 from sklearn.decomposition import PCA
 
-from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode, pca_rotate, split_dataset
+from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode, pca_rotate, split_dataset, preprocess_pipeline
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
@@ -495,3 +495,62 @@ class TestSplitDataset:
         with pytest.raises(ValueError, match="sum to 1.0"):
             split_dataset(iq, labels, ratios=(0.5, 0.2, 0.2))
 
+
+# ─── preprocess_pipeline ─────────────────────────────────────────────────────
+
+class TestPreprocessPipeline:
+    """Tests for the preprocess_pipeline function."""
+
+    @pytest.fixture
+    def mock_dataset(self):
+        """Create a mock dataset."""
+        rng = np.random.default_rng(42)
+        n_samples = 1000
+        iq = rng.normal(size=(n_samples, 2))
+        labels = np.zeros(n_samples, dtype=int)
+        labels[:300] = 1
+        rng.shuffle(labels)
+        return iq, labels
+
+    def test_pipeline_without_pca(self, mock_dataset):
+        """Test pipeline when PCA is not requested."""
+        iq, labels = mock_dataset
+        params = {"split_ratios": (0.7, 0.15, 0.15), "seed": 42, "use_pca": False}
+        
+        result = preprocess_pipeline(iq, labels, params)
+        
+        assert "train" in result
+        assert "val" in result
+        assert "test" in result
+        assert "scaler" in result
+        assert "pca" in result
+        
+        assert result["pca"] is None
+        assert isinstance(result["scaler"], StandardScaler)
+        
+        train_iq, train_labels = result["train"]
+        val_iq, val_labels = result["val"]
+        test_iq, test_labels = result["test"]
+        
+        assert len(train_iq) == 700
+        assert len(val_iq) == 150
+        assert len(test_iq) == 150
+        
+        # Check angle encoding bounds
+        for subset_iq in (train_iq, val_iq, test_iq):
+            assert np.all(subset_iq > -np.pi)
+            assert np.all(subset_iq < np.pi)
+
+    def test_pipeline_with_pca(self, mock_dataset):
+        """Test pipeline when PCA is requested."""
+        iq, labels = mock_dataset
+        params = {"split_ratios": (0.7, 0.15, 0.15), "seed": 42, "use_pca": True, "pca_components": 2}
+        
+        result = preprocess_pipeline(iq, labels, params)
+        
+        assert isinstance(result["pca"], PCA)
+        
+        train_iq, train_labels = result["train"]
+        # Check angle encoding bounds
+        assert np.all(train_iq > -np.pi)
+        assert np.all(train_iq < np.pi)

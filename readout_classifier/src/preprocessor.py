@@ -1,6 +1,6 @@
 """Preprocessing utilities for IQ readout data."""
 
-from typing import NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 
 import numpy as np
 from sklearn.decomposition import PCA
@@ -198,3 +198,72 @@ def split_dataset(
     )
 
     return (train_iq, train_labels), (val_iq, val_labels), (test_iq, test_labels)
+
+
+def preprocess_pipeline(
+    raw_iq: np.ndarray,
+    raw_labels: np.ndarray,
+    params: dict[str, Any]
+) -> dict[str, Any]:
+    """Execute the full preprocessing pipeline on raw IQ data.
+
+    Chains the following steps:
+      1. Split dataset into train, validation, and test sets.
+      2. Standardise (fit on train, transform val/test).
+      3. Optionally apply PCA rotation (fit on train, transform val/test).
+      4. Angle encode mapped to (-π, π).
+
+    Args:
+        raw_iq (np.ndarray): Raw IQ samples.
+        raw_labels (np.ndarray): Ground truth labels.
+        params (dict[str, Any]): Configuration dictionary. Can include:
+            - 'split_ratios' (tuple): Train/val/test split ratios. Defaults to (0.7, 0.15, 0.15).
+            - 'seed' (int): Random seed. Defaults to 42.
+            - 'use_pca' (bool): Whether to apply PCA rotation. Defaults to False.
+            - 'pca_components' (int): Number of PCA components if used. Defaults to 2.
+
+    Returns:
+        dict[str, Any]: A dictionary containing:
+            - 'train': (encoded_train_iq, train_labels)
+            - 'val': (encoded_val_iq, val_labels)
+            - 'test': (encoded_test_iq, test_labels)
+            - 'scaler': The fitted StandardScaler.
+            - 'pca': The fitted PCA object (None if not used).
+    """
+    ratios = params.get("split_ratios", (0.7, 0.15, 0.15))
+    seed = params.get("seed", 42)
+    use_pca = params.get("use_pca", False)
+    pca_comp = params.get("pca_components", 2)
+
+    # 1. Split
+    train_split, val_split, test_split = split_dataset(
+        raw_iq, raw_labels, ratios=ratios, seed=seed
+    )
+    train_iq, train_labels = train_split
+    val_iq, val_labels = val_split
+    test_iq, test_labels = test_split
+
+    # 2. Standardise
+    scaled_train, scaler = standardise(train_iq)
+    scaled_val, _ = standardise(val_iq, scaler=scaler)
+    scaled_test, _ = standardise(test_iq, scaler=scaler)
+
+    # 3. PCA (optional)
+    pca = None
+    if use_pca:
+        scaled_train, pca = pca_rotate(scaled_train, n_components=pca_comp)
+        scaled_val, _ = pca_rotate(scaled_val, pca=pca)
+        scaled_test, _ = pca_rotate(scaled_test, pca=pca)
+
+    # 4. Angle Encode
+    enc_train = angle_encode(scaled_train)
+    enc_val = angle_encode(scaled_val)
+    enc_test = angle_encode(scaled_test)
+
+    return {
+        "train": (enc_train, train_labels),
+        "val": (enc_val, val_labels),
+        "test": (enc_test, test_labels),
+        "scaler": scaler,
+        "pca": pca
+    }
