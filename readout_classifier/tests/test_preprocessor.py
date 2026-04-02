@@ -5,7 +5,10 @@ import pytest
 
 from sklearn.decomposition import PCA
 
-from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode, pca_rotate, split_dataset, preprocess_pipeline
+from readout_classifier.src.preprocessor import (
+    StandardScaler, PipelineParams, PipelineResult,
+    standardise, angle_encode, pca_rotate, split_dataset, preprocess_pipeline,
+)
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
@@ -170,6 +173,19 @@ class TestEdgeCases:
         ])
         with pytest.raises(ValueError, match="zero standard deviation"):
             standardise(data)
+
+    def test_rejects_provided_scaler_with_zero_sigma(self):
+        """A provided scaler with zero sigma should raise ValueError.
+
+        Expected: raises ValueError mentioning 'zero sigma'.
+        """
+        bad_scaler = StandardScaler(
+            mu=np.array([0.0, 0.0]),
+            sigma=np.array([1.0, 0.0]),
+        )
+        data = np.ones((10, 2))
+        with pytest.raises(ValueError, match="zero sigma"):
+            standardise(data, scaler=bad_scaler)
 
     def test_single_feature(self):
         """Standardise should work for single-feature (N, 1) data.
@@ -429,6 +445,16 @@ class TestPCARotate:
         expected_rotated = pca_train.transform(iq_test)
         np.testing.assert_allclose(rotated_test, expected_rotated)
 
+    def test_rejects_n_components_mismatch(self, iq_train, iq_test):
+        """Passing a pre-fitted PCA with a different n_components should
+        raise ValueError.
+
+        Expected: raises ValueError mentioning 'components'.
+        """
+        _, pca_fitted = pca_rotate(iq_train, n_components=2)
+        with pytest.raises(ValueError, match="components"):
+            pca_rotate(iq_test, pca=pca_fitted, n_components=1)
+
     def test_rejects_1d_input(self):
         """pca_rotate requires a 2-D array; a 1-D vector is invalid.
 
@@ -495,6 +521,24 @@ class TestSplitDataset:
         with pytest.raises(ValueError, match="sum to 1.0"):
             split_dataset(iq, labels, ratios=(0.5, 0.2, 0.2))
 
+    def test_rejects_zero_ratio(self, mock_dataset):
+        """Test it raises an error when any ratio is zero.
+
+        Expected: raises ValueError mentioning 'positive'.
+        """
+        iq, labels = mock_dataset
+        with pytest.raises(ValueError, match="positive"):
+            split_dataset(iq, labels, ratios=(1.0, 0.0, 0.0))
+
+    def test_rejects_negative_ratio(self, mock_dataset):
+        """Test it raises an error when any ratio is negative.
+
+        Expected: raises ValueError mentioning 'positive'.
+        """
+        iq, labels = mock_dataset
+        with pytest.raises(ValueError, match="positive"):
+            split_dataset(iq, labels, ratios=(0.8, 0.3, -0.1))
+
 
 # ─── preprocess_pipeline ─────────────────────────────────────────────────────
 
@@ -518,19 +562,14 @@ class TestPreprocessPipeline:
         params = {"split_ratios": (0.7, 0.15, 0.15), "seed": 42, "use_pca": False}
         
         result = preprocess_pipeline(iq, labels, params)
-        
-        assert "train" in result
-        assert "val" in result
-        assert "test" in result
-        assert "scaler" in result
-        assert "pca" in result
-        
-        assert result["pca"] is None
-        assert isinstance(result["scaler"], StandardScaler)
-        
-        train_iq, train_labels = result["train"]
-        val_iq, val_labels = result["val"]
-        test_iq, test_labels = result["test"]
+
+        assert isinstance(result, PipelineResult)
+        assert result.pca is None
+        assert isinstance(result.scaler, StandardScaler)
+
+        train_iq, train_labels = result.train
+        val_iq, val_labels = result.val
+        test_iq, test_labels = result.test
         
         assert len(train_iq) == 700
         assert len(val_iq) == 150
@@ -545,12 +584,44 @@ class TestPreprocessPipeline:
         """Test pipeline when PCA is requested."""
         iq, labels = mock_dataset
         params = {"split_ratios": (0.7, 0.15, 0.15), "seed": 42, "use_pca": True, "pca_components": 2}
-        
+
         result = preprocess_pipeline(iq, labels, params)
-        
-        assert isinstance(result["pca"], PCA)
-        
-        train_iq, train_labels = result["train"]
+
+        assert isinstance(result.pca, PCA)
+
+        train_iq, train_labels = result.train
         # Check angle encoding bounds
         assert np.all(train_iq > -np.pi)
         assert np.all(train_iq < np.pi)
+
+    def test_returns_pipeline_result(self, mock_dataset):
+        """Test that the return value is a PipelineResult named tuple.
+
+        Expected: result is a PipelineResult with named field access.
+        """
+        iq, labels = mock_dataset
+        result = preprocess_pipeline(iq, labels, PipelineParams())
+
+        assert isinstance(result, PipelineResult)
+        assert isinstance(result.scaler, StandardScaler)
+
+    def test_accepts_pipeline_params(self, mock_dataset):
+        """Test that PipelineParams dataclass is accepted directly.
+
+        Expected: same result as passing an equivalent dict.
+        """
+        iq, labels = mock_dataset
+        params = PipelineParams(
+            split_ratios=(0.7, 0.15, 0.15), seed=42, use_pca=False
+        )
+        result = preprocess_pipeline(iq, labels, params)
+        assert len(result.train[0]) == 700
+
+    def test_rejects_dict_with_typo(self, mock_dataset):
+        """A dict with an unrecognised key should raise TypeError.
+
+        Expected: raises TypeError (from PipelineParams.__init__).
+        """
+        iq, labels = mock_dataset
+        with pytest.raises(TypeError):
+            preprocess_pipeline(iq, labels, {"split_ratio": (0.7, 0.15, 0.15)})

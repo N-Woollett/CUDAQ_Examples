@@ -1,5 +1,6 @@
 """Preprocessing utilities for IQ readout data."""
 
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
 import numpy as np
@@ -19,6 +20,42 @@ class StandardScaler(NamedTuple):
     """
     mu: np.ndarray
     sigma: np.ndarray
+
+
+@dataclass(frozen=True)
+class PipelineParams:
+    """Typed configuration for :func:`preprocess_pipeline`.
+
+    Using a dataclass instead of a plain dict prevents silent
+    fallback to defaults when a key is misspelled.
+
+    Attributes:
+        split_ratios: Train/val/test split ratios.
+        seed: Random seed for reproducibility.
+        use_pca: Whether to apply PCA rotation.
+        pca_components: Number of PCA components if used.
+    """
+    split_ratios: tuple[float, float, float] = (0.7, 0.15, 0.15)
+    seed: int = 42
+    use_pca: bool = False
+    pca_components: int = 2
+
+
+class PipelineResult(NamedTuple):
+    """Typed return value for :func:`preprocess_pipeline`.
+
+    Attributes:
+        train: (encoded_train_iq, train_labels)
+        val: (encoded_val_iq, val_labels)
+        test: (encoded_test_iq, test_labels)
+        scaler: The fitted StandardScaler.
+        pca: The fitted PCA object (None if not used).
+    """
+    train: tuple[np.ndarray, np.ndarray]
+    val: tuple[np.ndarray, np.ndarray]
+    test: tuple[np.ndarray, np.ndarray]
+    scaler: StandardScaler
+    pca: Optional[PCA]
 
 
 def standardise(
@@ -72,6 +109,10 @@ def standardise(
             )
 
         scaler = StandardScaler(mu=mu, sigma=sigma)
+    elif np.any(scaler.sigma == 0.0):
+        raise ValueError(
+            "Provided scaler has zero sigma — cannot standardise."
+        )
 
     scaled = (iq_data - scaler.mu) / scaler.sigma
     return scaled, scaler
@@ -151,9 +192,15 @@ def pca_rotate(
 
     if pca is None:
         pca = PCA(n_components=n_components)
-        pca.fit(iq_data)
+        rotated = pca.fit_transform(iq_data)
+    else:
+        if pca.n_components_ != n_components:
+            raise ValueError(
+                f"Provided PCA has {pca.n_components_} components, "
+                f"but n_components={n_components} was requested."
+            )
+        rotated = pca.transform(iq_data)
 
-    rotated = pca.transform(iq_data)
     return rotated, pca
 
 
@@ -182,6 +229,8 @@ def split_dataset(
         ValueError: If ratios do not sum to 1.0.
     """
     train_r, val_r, test_r = ratios
+    if any(r <= 0 for r in ratios):
+        raise ValueError(f"All ratios must be positive, got {ratios}")
     if not np.isclose(train_r + val_r + test_r, 1.0):
         raise ValueError(f"Ratios must sum to 1.0, got {sum(ratios)}")
 
@@ -203,8 +252,8 @@ def split_dataset(
 def preprocess_pipeline(
     raw_iq: np.ndarray,
     raw_labels: np.ndarray,
-    params: dict[str, Any]
-) -> dict[str, Any]:
+    params: PipelineParams | dict[str, Any],
+) -> PipelineResult:
     """Execute the full preprocessing pipeline on raw IQ data.
 
     Chains the following steps:
@@ -216,28 +265,20 @@ def preprocess_pipeline(
     Args:
         raw_iq (np.ndarray): Raw IQ samples.
         raw_labels (np.ndarray): Ground truth labels.
-        params (dict[str, Any]): Configuration dictionary. Can include:
-            - 'split_ratios' (tuple): Train/val/test split ratios. Defaults to (0.7, 0.15, 0.15).
-            - 'seed' (int): Random seed. Defaults to 42.
-            - 'use_pca' (bool): Whether to apply PCA rotation. Defaults to False.
-            - 'pca_components' (int): Number of PCA components if used. Defaults to 2.
+        params (PipelineParams | dict): Configuration. When a dict is
+            passed it is converted to a :class:`PipelineParams` — any
+            unrecognised keys will raise a ``TypeError``.
 
     Returns:
-        dict[str, Any]: A dictionary containing:
-            - 'train': (encoded_train_iq, train_labels)
-            - 'val': (encoded_val_iq, val_labels)
-            - 'test': (encoded_test_iq, test_labels)
-            - 'scaler': The fitted StandardScaler.
-            - 'pca': The fitted PCA object (None if not used).
+        PipelineResult: A named tuple containing train, val, test splits,
+            the fitted scaler, and the fitted PCA object (None if unused).
     """
-    ratios = params.get("split_ratios", (0.7, 0.15, 0.15))
-    seed = params.get("seed", 42)
-    use_pca = params.get("use_pca", False)
-    pca_comp = params.get("pca_components", 2)
+    if isinstance(params, dict):
+        params = PipelineParams(**params)
 
     # 1. Split
     train_split, val_split, test_split = split_dataset(
-        raw_iq, raw_labels, ratios=ratios, seed=seed
+        raw_iq, raw_labels, ratios=params.split_ratios, seed=params.seed
     )
     train_iq, train_labels = train_split
     val_iq, val_labels = val_split
@@ -250,8 +291,10 @@ def preprocess_pipeline(
 
     # 3. PCA (optional)
     pca = None
-    if use_pca:
-        scaled_train, pca = pca_rotate(scaled_train, n_components=pca_comp)
+    if params.use_pca:
+        scaled_train, pca = pca_rotate(
+            scaled_train, n_components=params.pca_components
+        )
         scaled_val, _ = pca_rotate(scaled_val, pca=pca)
         scaled_test, _ = pca_rotate(scaled_test, pca=pca)
 
@@ -260,10 +303,10 @@ def preprocess_pipeline(
     enc_val = angle_encode(scaled_val)
     enc_test = angle_encode(scaled_test)
 
-    return {
-        "train": (enc_train, train_labels),
-        "val": (enc_val, val_labels),
-        "test": (enc_test, test_labels),
-        "scaler": scaler,
-        "pca": pca
-    }
+    return PipelineResult(
+        train=(enc_train, train_labels),
+        val=(enc_val, val_labels),
+        test=(enc_test, test_labels),
+        scaler=scaler,
+        pca=pca,
+    )
