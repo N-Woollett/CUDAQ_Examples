@@ -4,6 +4,8 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Tuple
 
+import matplotlib.pyplot as plt 
+
 def generate_iq_data(
     n_samples: int,
     params: Dict[str, float]
@@ -90,6 +92,9 @@ def main():
 
     results = generate_iq_data(n_samples=params["n_train"], params=params)
     print(results)
+
+    plt.scatter(results[0][:, 0], results[0][:, 1], c=results[1])
+    plt.show()
 
 if __name__ == "__main__":
     main()
