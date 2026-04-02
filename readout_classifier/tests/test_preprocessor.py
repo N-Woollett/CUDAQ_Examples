@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from readout_classifier.src.preprocessor import StandardScaler, standardise
+from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
@@ -163,3 +163,108 @@ class TestIntegrationWithSimulator:
         # Test set should be *approximately* centred (same distribution,
         # different seed → up to sampling noise)
         assert scaled_test.shape == iq_test.shape
+
+
+# ─── angle_encode ────────────────────────────────────────────────────────────
+
+class TestAngleEncodeBasic:
+    """Core π·tanh mapping properties."""
+
+    def test_output_shape_matches_input(self, iq_train):
+        scaled, _ = standardise(iq_train)
+        encoded = angle_encode(scaled)
+        assert encoded.shape == scaled.shape
+
+    def test_all_values_within_minus_pi_to_pi(self, iq_train):
+        scaled, _ = standardise(iq_train)
+        encoded = angle_encode(scaled)
+        assert np.all(encoded > -np.pi)
+        assert np.all(encoded < np.pi)
+
+    def test_zero_maps_to_zero(self):
+        data = np.zeros((5, 2))
+        encoded = angle_encode(data)
+        np.testing.assert_allclose(encoded, 0.0)
+
+    def test_monotonically_increasing(self):
+        """π·tanh is strictly increasing, so order must be preserved."""
+        x = np.linspace(-5, 5, 100).reshape(-1, 1)
+        encoded = angle_encode(x)
+        assert np.all(np.diff(encoded, axis=0) > 0)
+
+    def test_antisymmetric(self):
+        """tanh is an odd function, so angle_encode(-x) == -angle_encode(x)."""
+        rng = np.random.default_rng(42)
+        x = rng.normal(size=(50, 2))
+        np.testing.assert_allclose(angle_encode(-x), -angle_encode(x))
+
+    def test_large_values_saturate_near_pi(self):
+        large = np.array([[100.0, -100.0]])
+        encoded = angle_encode(large)
+        np.testing.assert_allclose(encoded[0, 0],  np.pi, atol=1e-10)
+        np.testing.assert_allclose(encoded[0, 1], -np.pi, atol=1e-10)
+
+    def test_exact_value_at_one(self):
+        """Verify π·tanh(1) ≈ 0.7616·π."""
+        data = np.array([[1.0, -1.0]])
+        encoded = angle_encode(data)
+        expected = np.pi * np.tanh(np.array([[1.0, -1.0]]))
+        np.testing.assert_allclose(encoded, expected)
+
+
+class TestAngleEncodeEdgeCases:
+
+    def test_rejects_1d_input(self):
+        with pytest.raises(ValueError, match="2-D"):
+            angle_encode(np.array([1.0, 2.0]))
+
+    def test_rejects_3d_input(self):
+        with pytest.raises(ValueError, match="2-D"):
+            angle_encode(np.zeros((2, 3, 4)))
+
+    def test_single_feature(self):
+        data = np.array([[0.0], [1.0], [-1.0]])
+        encoded = angle_encode(data)
+        assert encoded.shape == (3, 1)
+        assert np.all(np.abs(encoded) < np.pi)
+
+    def test_many_features(self):
+        rng = np.random.default_rng(7)
+        data = rng.normal(size=(200, 5))
+        encoded = angle_encode(data)
+        assert encoded.shape == (200, 5)
+        assert np.all(np.abs(encoded) < np.pi)
+
+
+# ─── full pipeline integration: simulate → standardise → angle_encode ────────
+
+class TestFullPipelineIntegration:
+    """End-to-end: generate IQ → standardise → angle_encode."""
+
+    def test_pipeline(self):
+        from readout_classifier.src.iq_simulator import generate_iq_data
+        import json
+        from pathlib import Path
+
+        config_path = (
+            Path(__file__).resolve().parent.parent / "config" / "default_params.json"
+        )
+        with open(config_path) as f:
+            params = json.load(f)
+
+        iq_train, _ = generate_iq_data(n_samples=params["n_train"], params=params)
+        iq_test, _ = generate_iq_data(n_samples=params["n_test"], params=params)
+
+        # Standardise
+        scaled_train, scaler = standardise(iq_train)
+        scaled_test, _ = standardise(iq_test, scaler=scaler)
+
+        # Angle encode
+        angles_train = angle_encode(scaled_train)
+        angles_test = angle_encode(scaled_test)
+
+        # Both sets must be bounded in (-π, π)
+        for angles in (angles_train, angles_test):
+            assert angles.shape[1] == 2
+            assert np.all(angles > -np.pi)
+            assert np.all(angles < np.pi)

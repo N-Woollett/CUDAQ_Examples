@@ -73,3 +73,42 @@ def standardise(
 
     scaled = (iq_data - scaler.mu) / scaler.sigma
     return scaled, scaler
+
+
+def angle_encode(iq_scaled: np.ndarray) -> np.ndarray:
+    """Map standardised IQ values to rotation angles in ``(-π, π)``.
+
+    Applies the element-wise transform:
+
+    .. math::
+
+        \\theta = \\pi \\, \\tanh(x)
+
+    The hyperbolic tangent saturates smoothly at ±1, so the resulting
+    angles are bounded in the open interval ``(-π, π)`` regardless of
+    input magnitude.  This avoids the aliasing problems of a simple
+    linear map (where values outside ``[-π, π]`` would wrap) while
+    preserving the sign and relative magnitude of the standardised
+    features.
+
+    This encoding is designed to feed directly into single-qubit
+    rotation gates (e.g. ``Ry(θ)``) in a variational quantum circuit.
+
+    Args:
+        iq_scaled (np.ndarray): Standardised IQ data with shape
+            ``(N, n_features)``.  Typically the output of
+            :func:`standardise`.
+
+    Returns:
+        np.ndarray: Angle-encoded data with the same shape as the
+        input, with all values in ``(-π, π)``.
+
+    Raises:
+        ValueError: If ``iq_scaled`` is not a 2-D array.
+    """
+    if iq_scaled.ndim != 2:
+        raise ValueError(
+            f"iq_scaled must be 2-D (N, n_features), got shape {iq_scaled.shape}"
+        )
+
+    return np.pi * np.tanh(iq_scaled)
