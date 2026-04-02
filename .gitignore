@@ -75,3 +75,6 @@ venv.bak/
 # OS
 .DS_Store
 Thumbs.db
+
+# Documentation directories
+readout_classifier/docs
