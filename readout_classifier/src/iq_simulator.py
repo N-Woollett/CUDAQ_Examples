@@ -1,8 +1,14 @@
-import cupy as cp
 import json
 import numpy as np
+import warnings
 from pathlib import Path
 from typing import Dict, Tuple
+
+try:
+    import cupy as cp
+    _CUPY_AVAILABLE = True
+except ImportError:
+    _CUPY_AVAILABLE = False
 
 import matplotlib.pyplot as plt 
 
@@ -85,6 +91,95 @@ def generate_iq_data(
     return iq, labels
 
 
+def generate_iq_data_gpu(
+    n_samples: int,
+    params: Dict[str, float]
+) -> Tuple["cp.ndarray", "cp.ndarray"]:
+    """
+    GPU-accelerated version of generate_iq_data using CuPy.
+
+    Mirrors the CPU implementation exactly but runs all random sampling
+    and array operations on the GPU.  If CuPy is not installed, a warning
+    is printed and the call is transparently forwarded to the CPU path.
+
+    Args:
+        n_samples (int): Number of single-shot samples to generate.
+        params (dict[str, float]): Same parameter dictionary as
+            ``generate_iq_data``.
+
+    Returns:
+        tuple[cp.ndarray, cp.ndarray]: (iq_data, labels) as CuPy device
+        arrays.  Use ``.get()`` to transfer back to the host if needed.
+        Falls back to NumPy arrays when CuPy is unavailable.
+    """
+    if not _CUPY_AVAILABLE:
+        warnings.warn(
+            "CuPy is not available — falling back to CPU implementation.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return generate_iq_data(n_samples, params)
+
+    snr = params["SNR"]
+    sigma = params["sigma"]
+    p_thermal = params["p_thermal"]
+    t1_over_tmeas = params["T1_over_tmeas"]
+    blob_angle = params["blob_angle"]
+    seed = int(params["seed"])
+
+    rng = cp.random.default_rng(seed)
+
+    # Draw balanced random labels {0, 1}
+    labels = rng.integers(0, 2, size=n_samples)
+
+    # Compute blob centres from SNR and blob_angle
+    separation = 2 * snr * sigma
+    mu_0_unrot = cp.array([-separation / 2.0, 0.0])
+    mu_1_unrot = cp.array([separation / 2.0, 0.0])
+
+    rot_matrix = cp.array([
+        [cp.cos(blob_angle), -cp.sin(blob_angle)],
+        [cp.sin(blob_angle),  cp.cos(blob_angle)]
+    ])
+
+    mu_0 = rot_matrix.dot(mu_0_unrot)
+    mu_1 = rot_matrix.dot(mu_1_unrot)
+
+    # Sample IQ points — CuPy Generator lacks multivariate_normal,
+    # so we draw independent normals and shift/rotate manually.
+    iq = cp.zeros((n_samples, 2))
+
+    mask_0 = (labels == 0)
+    mask_1 = (labels == 1)
+
+    n_0 = int(cp.sum(mask_0))
+    n_1 = int(cp.sum(mask_1))
+
+    if n_0 > 0:
+        noise_0 = rng.standard_normal((n_0, 2)) * sigma
+        iq[mask_0] = noise_0 + mu_0
+    if n_1 > 0:
+        noise_1 = rng.standard_normal((n_1, 2)) * sigma
+        iq[mask_1] = noise_1 + mu_1
+
+    # Apply T1 decay by re-drawing a fraction of |1⟩ points from the |0⟩ distribution
+    p_t1 = 1.0 - cp.exp(-1.0 / t1_over_tmeas)
+    decay_mask = mask_1 & (rng.random(n_samples) < p_t1)
+    n_decay = int(cp.sum(decay_mask))
+    if n_decay > 0:
+        noise_decay = rng.standard_normal((n_decay, 2)) * sigma
+        iq[decay_mask] = noise_decay + mu_0
+
+    # Apply thermal excitation by re-drawing a fraction of |0⟩ from |1⟩ distribution
+    thermal_mask = mask_0 & (rng.random(n_samples) < p_thermal)
+    n_thermal = int(cp.sum(thermal_mask))
+    if n_thermal > 0:
+        noise_thermal = rng.standard_normal((n_thermal, 2)) * sigma
+        iq[thermal_mask] = noise_thermal + mu_1
+
+    return iq, labels
+
+
 def main():
     config_path = Path(__file__).resolve().parent.parent / "config" / "default_params.json"
     with open(config_path) as f:
@@ -94,6 +189,12 @@ def main():
     print(results)
 
     plt.scatter(results[0][:, 0], results[0][:, 1], c=results[1])
+    plt.show()
+
+    results = generate_iq_data_gpu(n_samples=10*params["n_train"], params=params)
+    print(results)
+
+    plt.scatter(results[0].get()[:, 0], results[0].get()[:, 1], c=results[1].get())
     plt.show()
 
 if __name__ == "__main__":
