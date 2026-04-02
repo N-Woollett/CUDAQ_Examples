@@ -115,7 +115,13 @@ def generate_iq_data(
     if n_decay > 0:
         iq[decay_mask] = rng.multivariate_normal(mu_0, cov_0, size=n_decay)
         
-    # Apply thermal excitation by re-drawing a fraction of |0> from |1> distribution
+    # --- Thermal excitation ---
+    # With probability p_thermal, a qubit prepared in the ground state |0> will
+    # transition to the excited state |1> due to thermal background photons.
+    # For each |0>-labelled point, we draw a uniform random number; if it falls
+    # below p_thermal, we replace the IQ point with a new sample from the |1> blob.
+    # This addition simulates a thermal flip, which is typically a much smaller
+    # effect (~2%) than the T1 decay modelled above.
     thermal_mask = mask_0 & (rng.random(n_samples) < p_thermal)
     n_thermal = np.sum(thermal_mask)
     if n_thermal > 0:
@@ -230,7 +236,13 @@ def generate_iq_data_gpu(
         z_decay = rng.standard_normal((n_decay, 2))
         iq[decay_mask] = z_decay @ L_0.T + mu_0
 
-    # Apply thermal excitation by re-drawing a fraction of |0⟩ from |1⟩ distribution
+    # --- Thermal excitation ---
+    # With probability p_thermal, a qubit prepared in the ground state |0> will
+    # transition to the excited state |1> due to thermal background photons.
+    # For each |0>-labelled point, we draw a uniform random number; if it falls
+    # below p_thermal, we resample from the |1> blob in this GPU implementation.
+    # This addition simulates a thermal flip, which is typically a much smaller
+    # effect (~2%) than the T1 decay modelled above.
     thermal_mask = mask_0 & (rng.random(n_samples) < p_thermal)
     n_thermal = int(cp.sum(thermal_mask))
     if n_thermal > 0:
