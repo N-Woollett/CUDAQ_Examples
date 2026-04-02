@@ -81,18 +81,10 @@ def generate_iq_data(
     # Draw balanced random labels {0, 1}
     labels = rng.integers(0, 2, size=n_samples)
     
-    # Compute blob centres from SNR and blob_angle
+    # Compute blob centres along I-axis (rotation applied globally later)
     separation = 2 * snr * sigma
-    mu_0_unrot = np.array([-separation / 2.0, 0.0])
-    mu_1_unrot = np.array([separation / 2.0, 0.0])
-    
-    rot_matrix = np.array([
-        [np.cos(blob_angle), -np.sin(blob_angle)],
-        [np.sin(blob_angle),  np.cos(blob_angle)]
-    ])
-    
-    mu_0 = rot_matrix.dot(mu_0_unrot)
-    mu_1 = rot_matrix.dot(mu_1_unrot)
+    mu_0 = np.array([-separation / 2.0, 0.0])
+    mu_1 = np.array([ separation / 2.0, 0.0])
     
     # Sample from N(mu_s, Sigma_s) for each state
     iq = np.zeros((n_samples, 2))
@@ -120,7 +112,19 @@ def generate_iq_data(
     n_thermal = np.sum(thermal_mask)
     if n_thermal > 0:
         iq[thermal_mask] = rng.multivariate_normal(mu_1, cov_1, size=n_thermal)
-        
+
+    # Apply global rotation R(blob_angle) to all IQ points.
+    # This simulates a non-axis-aligned readout, which occurs when the LO
+    # frequency is not perfectly centred between the two dispersed resonator
+    # frequencies.  Rotating *after* generation ensures both the blob centres
+    # and the covariance ellipses are rotated together.
+    if blob_angle != 0.0:
+        rot = np.array([
+            [np.cos(blob_angle), -np.sin(blob_angle)],
+            [np.sin(blob_angle),  np.cos(blob_angle)]
+        ])
+        iq = iq @ rot.T   # (N,2) @ (2,2) -> (N,2)
+
     return iq, labels
 
 
@@ -180,18 +184,10 @@ def generate_iq_data_gpu(
     # Draw balanced random labels {0, 1}
     labels = rng.integers(0, 2, size=n_samples)
 
-    # Compute blob centres from SNR and blob_angle
+    # Compute blob centres along I-axis (rotation applied globally later)
     separation = 2 * snr * sigma
-    mu_0_unrot = cp.array([-separation / 2.0, 0.0])
-    mu_1_unrot = cp.array([separation / 2.0, 0.0])
-
-    rot_matrix = cp.array([
-        [cp.cos(blob_angle), -cp.sin(blob_angle)],
-        [cp.sin(blob_angle),  cp.cos(blob_angle)]
-    ])
-
-    mu_0 = rot_matrix.dot(mu_0_unrot)
-    mu_1 = rot_matrix.dot(mu_1_unrot)
+    mu_0 = cp.array([-separation / 2.0, 0.0])
+    mu_1 = cp.array([ separation / 2.0, 0.0])
 
     # Sample IQ points — CuPy Generator lacks multivariate_normal,
     # so we draw standard normals and transform via Cholesky: x = mu + L @ z.
@@ -224,6 +220,15 @@ def generate_iq_data_gpu(
     if n_thermal > 0:
         z_thermal = rng.standard_normal((n_thermal, 2))
         iq[thermal_mask] = z_thermal @ L_1.T + mu_1
+
+    # Apply global rotation R(blob_angle) to all IQ points (see CPU docstring).
+    if blob_angle != 0.0:
+        cos_a, sin_a = float(cp.cos(blob_angle)), float(cp.sin(blob_angle))
+        rot = cp.array([
+            [cos_a, -sin_a],
+            [sin_a,  cos_a]
+        ])
+        iq = iq @ rot.T
 
     return iq, labels
 
