@@ -4,6 +4,7 @@ from typing import NamedTuple, Optional
 
 import numpy as np
 from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
 
 
 class StandardScaler(NamedTuple):
@@ -155,3 +156,45 @@ def pca_rotate(
     rotated = pca.transform(iq_data)
     return rotated, pca
 
+
+def split_dataset(
+    iq: np.ndarray,
+    labels: np.ndarray,
+    ratios: tuple[float, float, float] = (0.7, 0.15, 0.15),
+    seed: int = 42
+) -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """Split dataset into train, validation and test sets.
+
+    Args:
+        iq (np.ndarray): The IQ data array.
+        labels (np.ndarray): The ground truth labels.
+        ratios (tuple[float, float, float]): The ratios for (train, val, test).
+            Must sum to 1.0. Defaults to (0.7, 0.15, 0.15).
+        seed (int): The random seed for the split.
+
+    Returns:
+        tuple: A tuple containing:
+            - (train_iq, train_labels)
+            - (val_iq, val_labels)
+            - (test_iq, test_labels)
+
+    Raises:
+        ValueError: If ratios do not sum to 1.0.
+    """
+    train_r, val_r, test_r = ratios
+    if not np.isclose(train_r + val_r + test_r, 1.0):
+        raise ValueError(f"Ratios must sum to 1.0, got {sum(ratios)}")
+
+    # First split into train and (val + test)
+    val_test_r = val_r + test_r
+    train_iq, temp_iq, train_labels, temp_labels = train_test_split(
+        iq, labels, test_size=val_test_r, random_state=seed, stratify=labels
+    )
+
+    # Then split temp into val and test
+    test_rel_r = test_r / val_test_r
+    val_iq, test_iq, val_labels, test_labels = train_test_split(
+        temp_iq, temp_labels, test_size=test_rel_r, random_state=seed, stratify=temp_labels
+    )
+
+    return (train_iq, train_labels), (val_iq, val_labels), (test_iq, test_labels)

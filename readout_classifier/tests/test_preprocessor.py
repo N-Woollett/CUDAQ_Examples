@@ -5,7 +5,7 @@ import pytest
 
 from sklearn.decomposition import PCA
 
-from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode, pca_rotate
+from readout_classifier.src.preprocessor import StandardScaler, standardise, angle_encode, pca_rotate, split_dataset
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
@@ -436,4 +436,62 @@ class TestPCARotate:
         """
         with pytest.raises(ValueError, match="2-D"):
             pca_rotate(np.array([1.0, 2.0, 3.0]))
+
+
+# ─── split_dataset ───────────────────────────────────────────────────────────
+
+class TestSplitDataset:
+    """Tests for the split_dataset function."""
+
+    @pytest.fixture
+    def mock_dataset(self):
+        """Create a mock dataset of 1000 samples with 30% class 1 and 70% class 0."""
+        rng = np.random.default_rng(42)
+        n_samples = 1000
+        iq = rng.normal(size=(n_samples, 2))
+        labels = np.zeros(n_samples, dtype=int)
+        labels[:300] = 1  # 30% are 1s
+        rng.shuffle(labels)
+        return iq, labels
+
+    def test_split_ratios(self, mock_dataset):
+        """Test dataset is split according to the given ratios.
+
+        Expected: shapes of returned sets match ratios 0.7, 0.15, 0.15.
+        """
+        iq, labels = mock_dataset
+        train, val, test = split_dataset(iq, labels, ratios=(0.7, 0.15, 0.15))
+        
+        train_iq, train_labels = train
+        val_iq, val_labels = val
+        test_iq, test_labels = test
+
+        assert len(train_iq) == 700
+        assert len(val_iq) == 150
+        assert len(test_iq) == 150
+
+        assert len(train_labels) == 700
+        assert len(val_labels) == 150
+        assert len(test_labels) == 150
+
+    def test_stratification(self, mock_dataset):
+        """Test the class ratio is preserved across all splits.
+
+        Expected: ratio of class 1 is ~0.3 in all splits.
+        """
+        iq, labels = mock_dataset
+        train, val, test = split_dataset(iq, labels, ratios=(0.8, 0.1, 0.1))
+        
+        for split_iq, split_labels in (train, val, test):
+            class_1_ratio = np.sum(split_labels == 1) / len(split_labels)
+            assert np.isclose(class_1_ratio, 0.3)
+
+    def test_rejects_invalid_ratios(self, mock_dataset):
+        """Test it raises an error when ratios don't sum to 1.0.
+
+        Expected: raises ValueError.
+        """
+        iq, labels = mock_dataset
+        with pytest.raises(ValueError, match="sum to 1.0"):
+            split_dataset(iq, labels, ratios=(0.5, 0.2, 0.2))
 
