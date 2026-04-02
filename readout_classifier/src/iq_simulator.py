@@ -100,7 +100,15 @@ def generate_iq_data(
     if n_1 > 0:
         iq[mask_1] = rng.multivariate_normal(mu_1, cov_1, size=n_1)
         
-    # Apply T1 decay by re-drawing a fraction of |1> points from the |0> distribution
+    # --- T1 decay during measurement ---
+    # Flip probability: p_t1 = 1 - exp(-t_meas / T1).
+    # Since the parameter stored in config is T1_over_tmeas = T1 / t_meas,
+    # this is equivalent to 1 - exp(-1 / T1_over_tmeas).
+    # For each |1⟩-labelled point, draw a uniform random number; if it falls
+    # below p_t1, replace the IQ point with a new sample from the |0⟩ blob.
+    # The label is kept as 1 (the ground-truth prepared state) but the IQ
+    # coordinates now look like |0⟩.  This models a qubit that decayed from
+    # |1⟩ to |0⟩ during the measurement integration window.
     p_t1 = 1.0 - np.exp(-1.0 / t1_over_tmeas)
     decay_mask = mask_1 & (rng.random(n_samples) < p_t1)
     n_decay = np.sum(decay_mask)
@@ -206,7 +214,15 @@ def generate_iq_data_gpu(
         z_1 = rng.standard_normal((n_1, 2))
         iq[mask_1] = z_1 @ L_1.T + mu_1
 
-    # Apply T1 decay by re-drawing a fraction of |1⟩ points from the |0⟩ distribution
+    # --- T1 decay during measurement ---
+    # Flip probability: p_t1 = 1 - exp(-t_meas / T1).
+    # Since the parameter stored in config is T1_over_tmeas = T1 / t_meas,
+    # this is equivalent to 1 - exp(-1 / T1_over_tmeas).
+    # For each |1⟩-labelled point, draw a uniform random number; if it falls
+    # below p_t1, replace the IQ point with a new sample from the |0⟩ blob.
+    # The label is kept as 1 (the ground-truth prepared state) but the IQ
+    # coordinates now look like |0⟩.  This models a qubit that decayed from
+    # |1⟩ to |0⟩ during the measurement integration window.
     p_t1 = 1.0 - cp.exp(-1.0 / t1_over_tmeas)
     decay_mask = mask_1 & (rng.random(n_samples) < p_t1)
     n_decay = int(cp.sum(decay_mask))
