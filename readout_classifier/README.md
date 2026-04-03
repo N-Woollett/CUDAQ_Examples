@@ -81,6 +81,44 @@ The system runs as a four-stage pipeline:
 
 4. **Evaluation** — produces confusion matrices, ROC curves, assignment fidelity, and a head-to-head comparison table against threshold, LDA, and MLP classifiers on the same test data.
 
+
+
+## Expected Results
+
+On default parameters (SNR = 3.0, T1/t_meas = 10.0, 2% thermal excitation):
+
+| Classifier | Accuracy | Assignment Fidelity | AUC  |
+|-----------|----------|-------------------|------|
+| Threshold | ~82%     | ~0.81              | ~0.89 |
+| LDA       | ~85%     | ~0.84              | ~0.92 |
+| MLP       | ~85%     | ~0.84              | ~0.92 |
+| **VQC**   | ~83%     | ~0.82              | ~0.91 |
+
+The VQC is expected to approach but not exceed LDA on this Gaussian data. The value is in the learning, not the leaderboard.
+
+## Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| cuda-quantum | ≥ 0.9 | Quantum kernels, simulation, variational algorithms |
+| cupy-cuda12x | ≥ 13.0 | GPU-accelerated data generation |
+| numpy | ≥ 1.24 | Array operations, CPU fallback |
+| scipy | ≥ 1.11 | L-BFGS-B optimiser |
+| scikit-learn | ≥ 1.3 | PCA, LDA, metrics, train/test splitting |
+| matplotlib | ≥ 3.8 | Evaluation plots |
+| pytest | ≥ 7.0 | Testing |
+
+A GPU with CUDA 12.x and Compute Capability 7.0+ is recommended. The project falls back to CPU backends (`qpp-cpu` for CUDA-Q, NumPy for data generation) if no GPU is available.
+
+## Further Reading
+
+The `docs/` directory contains a full design document covering the dispersive readout physics, CUDA-Q architecture decisions, and a detailed implementation plan with per-task verification tests. Key references:
+
+- Blais, A. et al., *Phys. Rev. A* 69, 062320 (2004) — Circuit QED architecture
+- Lienhard, B. et al., *Phys. Rev. Applied* 17, 014024 (2022) — DNN qubit-state discrimination
+- Cerezo, M. et al., *Nat. Rev. Phys.* 3, 625 (2021) — Variational quantum algorithms
+- NVIDIA CUDA-Q Documentation: [nvidia.github.io/cuda-quantum](https://nvidia.github.io/cuda-quantum/latest/)
+
 ## Environment Setup
 
 This project uses Conda for environment management. An `environment.yml` file is provided to recreate the necessary environment.
@@ -137,41 +175,3 @@ python -m src.evaluator --model checkpoints/best.npz --data data/preprocessed.np
 ```
 
 Or work through the notebooks in order for a guided experience.
-
-## Expected Results
-
-On default parameters (SNR = 3.0, T1/t_meas = 10.0, 2% thermal excitation):
-
-| Classifier | Accuracy | Assignment Fidelity | AUC  |
-|-----------|----------|-------------------|------|
-| Threshold | ~82%     | ~0.81              | ~0.89 |
-| LDA       | ~85%     | ~0.84              | ~0.92 |
-| MLP       | ~85%     | ~0.84              | ~0.92 |
-| **VQC**   | ~83%     | ~0.82              | ~0.91 |
-
-The VQC is expected to approach but not exceed LDA on this Gaussian data. The value is in the learning, not the leaderboard.
-
-## Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| cuda-quantum | ≥ 0.9 | Quantum kernels, simulation, variational algorithms |
-| cupy-cuda12x | ≥ 13.0 | GPU-accelerated data generation |
-| numpy | ≥ 1.24 | Array operations, CPU fallback |
-| scipy | ≥ 1.11 | L-BFGS-B optimiser |
-| scikit-learn | ≥ 1.3 | PCA, LDA, metrics, train/test splitting |
-| matplotlib | ≥ 3.8 | Evaluation plots |
-| pytest | ≥ 7.0 | Testing |
-
-A GPU with CUDA 12.x and Compute Capability 7.0+ is recommended. The project falls back to CPU backends (`qpp-cpu` for CUDA-Q, NumPy for data generation) if no GPU is available.
-
-## Further Reading
-
-The `docs/` directory contains a full design document covering the dispersive readout physics, CUDA-Q architecture decisions, and a detailed implementation plan with per-task verification tests. Key references:
-
-- Blais, A. et al., *Phys. Rev. A* 69, 062320 (2004) — Circuit QED architecture
-- Lienhard, B. et al., *Phys. Rev. Applied* 17, 014024 (2022) — DNN qubit-state discrimination
-- Cerezo, M. et al., *Nat. Rev. Phys.* 3, 625 (2021) — Variational quantum algorithms
-- NVIDIA CUDA-Q Documentation: [nvidia.github.io/cuda-quantum](https://nvidia.github.io/cuda-quantum/latest/)
-
-
