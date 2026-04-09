@@ -23,6 +23,7 @@ from readout_classifier.src.vqc_classifier import (
     predict_score,
     predict_score_batch,
     train,
+    train_step,
 )
 
 # CUDA-Q's default simulator uses complex64 (single precision, ~7 decimal
@@ -827,3 +828,166 @@ class TestTrain:
 
         assert optimal_cost == pytest.approx(0.0, abs=0.01)
         assert optimal_params[0] == pytest.approx(1.0, abs=0.05)
+
+
+class TestTrainStep:
+    """Tests for the train_step() function."""
+
+    def test_returns_updated_thetas_and_cost(self, monkeypatch):
+        """train_step returns (updated_thetas, cost) with correct types.
+
+        Strategy: monkeypatch cost_function with a quadratic so we can verify
+        the return structure without running a quantum circuit.
+
+        Expected: returns a list of floats and a scalar float cost.
+        """
+        import readout_classifier.src.vqc_classifier as mod
+
+        def quadratic_cost(thetas, features_batch, labels_batch):
+            return (thetas[0] - 1.0) ** 2
+
+        monkeypatch.setattr(mod, "cost_function", quadratic_cost)
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 50
+
+        updated_thetas, cost = train_step(
+            thetas=[0.0],
+            batch_features=[[0.0]],
+            batch_labels=[0],
+            optimizer=optimizer,
+        )
+
+        assert isinstance(updated_thetas, list)
+        assert isinstance(cost, float)
+        assert len(updated_thetas) == 1
+
+    def test_converges_on_quadratic(self, monkeypatch):
+        """train_step minimises a quadratic f(x) = (x-1)^2 starting from x=0.
+
+        Expected: updated theta ≈ 1.0, cost ≈ 0.0.
+        """
+        import readout_classifier.src.vqc_classifier as mod
+
+        def quadratic_cost(thetas, features_batch, labels_batch):
+            return (thetas[0] - 1.0) ** 2
+
+        monkeypatch.setattr(mod, "cost_function", quadratic_cost)
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 50
+
+        updated_thetas, cost = train_step(
+            thetas=[0.0],
+            batch_features=[[0.0]],
+            batch_labels=[0],
+            optimizer=optimizer,
+        )
+
+        assert cost == pytest.approx(0.0, abs=0.01)
+        assert updated_thetas[0] == pytest.approx(1.0, abs=0.05)
+
+    def test_respects_initial_thetas(self, monkeypatch):
+        """train_step starts from the provided thetas, not from zero.
+
+        Strategy: use a quadratic f(x) = (x-3)^2 and start near 3.0.
+        With only 1 iteration, the result should stay close to the start.
+
+        Expected: updated theta ≈ 3.0 (closer than starting from 0 would be).
+        """
+        import readout_classifier.src.vqc_classifier as mod
+
+        def quadratic_cost(thetas, features_batch, labels_batch):
+            return (thetas[0] - 3.0) ** 2
+
+        monkeypatch.setattr(mod, "cost_function", quadratic_cost)
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 1
+
+        updated_thetas, _ = train_step(
+            thetas=[2.9],
+            batch_features=[[0.0]],
+            batch_labels=[0],
+            optimizer=optimizer,
+        )
+
+        assert abs(updated_thetas[0] - 3.0) < 1.0
+
+    def test_multi_param_optimization(self, monkeypatch):
+        """train_step handles multiple parameters.
+
+        Strategy: minimise f(x,y) = (x-1)^2 + (y-2)^2.
+
+        Expected: thetas ≈ [1.0, 2.0].
+        """
+        import readout_classifier.src.vqc_classifier as mod
+
+        def multi_cost(thetas, features_batch, labels_batch):
+            return (thetas[0] - 1.0) ** 2 + (thetas[1] - 2.0) ** 2
+
+        monkeypatch.setattr(mod, "cost_function", multi_cost)
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 200
+
+        updated_thetas, cost = train_step(
+            thetas=[0.0, 0.0],
+            batch_features=[[0.0]],
+            batch_labels=[0],
+            optimizer=optimizer,
+        )
+
+        assert len(updated_thetas) == 2
+        assert cost == pytest.approx(0.0, abs=0.05)
+        assert updated_thetas[0] == pytest.approx(1.0, abs=0.1)
+        assert updated_thetas[1] == pytest.approx(2.0, abs=0.1)
+
+    def test_train_step_lowers_cost_on_separable_data(self):
+        """One train_step on trivially separable IQ data reduces cost.
+
+        Strategy: generate 32 samples at SNR=10 (well-separated blobs),
+        preprocess through the standard pipeline, compute cost at random
+        initial thetas, run one train_step, and verify cost decreased.
+
+        Expected: cost after train_step < cost at random initial thetas.
+        """
+        from readout_classifier.src.iq_simulator import generate_iq_data
+        from readout_classifier.src.preprocessor import (
+            angle_encode,
+            standardise,
+        )
+
+        params = {
+            "SNR": 10.0,
+            "sigma": 1.0,
+            "p_thermal": 0.0,
+            "T1_over_tmeas": 1e6,
+            "blob_angle": 0.0,
+            "seed": 42,
+        }
+        iq_data, labels = generate_iq_data(32, params)
+
+        scaled, _ = standardise(iq_data)
+        features = angle_encode(scaled)
+
+        features_list = features.tolist()
+        labels_list = labels.tolist()
+
+        config = ClassifierConfig(n_qubits=3, n_layers=2)
+        rng = np.random.default_rng(99)
+        initial_thetas = rng.uniform(-np.pi, np.pi, size=config.n_params).tolist()
+
+        initial_cost = cost_function(initial_thetas, features_list, labels_list)
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 50
+
+        updated_thetas, step_cost = train_step(
+            thetas=initial_thetas,
+            batch_features=features_list,
+            batch_labels=labels_list,
+            optimizer=optimizer,
+        )
+
+        assert step_cost < initial_cost

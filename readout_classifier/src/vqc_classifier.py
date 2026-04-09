@@ -188,6 +188,34 @@ def cost_function(
     return mse
 
 
+def train_step(
+    thetas: list[float],
+    batch_features: list[list[float]],
+    batch_labels: list[int],
+    optimizer,
+) -> tuple[list[float], float]:
+    """Run a single optimization step on one mini-batch.
+
+    Args:
+        thetas: Current parameter values (length n_params).
+        batch_features: Feature vectors for this batch, each of length 2.
+        batch_labels: Binary labels (0 or 1), one per feature vector.
+        optimizer: A CUDAQ optimizer instance (e.g. cudaq.optimizers.COBYLA()).
+
+    Returns:
+        (updated_thetas, cost) — the optimized parameters and achieved cost.
+    """
+    n_params = len(thetas)
+    optimizer.initial_parameters = thetas
+
+    def wrapped_cost(params: list[float]) -> tuple[float, list[float]]:
+        cost = cost_function(params, batch_features, batch_labels)
+        return cost, []
+
+    optimal_cost, optimal_params = optimizer.optimize(n_params, wrapped_cost)
+    return optimal_params, optimal_cost
+
+
 def train(
     features_batch: list[list[float]],
     labels_batch: list[int],
