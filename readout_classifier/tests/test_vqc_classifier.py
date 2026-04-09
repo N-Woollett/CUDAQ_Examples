@@ -10,6 +10,7 @@ import cudaq
 from readout_classifier.src.vqc_classifier import (
     angle_encoding_feature_map,
     classifier_kernel,
+    cost_function,
     HAMILTONIAN,
     N_PARAMS,
     N_QUBITS,
@@ -583,3 +584,107 @@ class TestPredictBatchPerformance:
             f"Batch ({batch_time:.3f}s) was >1.5x slower than sequential "
             f"({sequential_time:.3f}s)"
         )
+
+
+# ─── cost function ──────────────────────────────────────────────────────────
+
+
+class TestCostFunction:
+    """Verify MSE cost between observed <Z> and target (+1 for label 0, -1 for label 1)."""
+
+    _DUMMY_THETAS = [0.0] * N_PARAMS
+    _DUMMY_FEATURES = [[0.0, 0.0]]
+
+    def test_perfect_prediction_label0_cost_zero(self, monkeypatch):
+        """Score +1 with label 0 (target +1) should give MSE = 0.
+
+        Expected: (1 - 1)^2 / 1 = 0.0.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [1.0],
+        )
+        cost = cost_function(self._DUMMY_THETAS, self._DUMMY_FEATURES, [0])
+        assert cost == pytest.approx(0.0)
+
+    def test_perfect_prediction_label1_cost_zero(self, monkeypatch):
+        """Score -1 with label 1 (target -1) should give MSE = 0.
+
+        Expected: (-1 - (-1))^2 / 1 = 0.0.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [-1.0],
+        )
+        cost = cost_function(self._DUMMY_THETAS, self._DUMMY_FEATURES, [1])
+        assert cost == pytest.approx(0.0)
+
+    def test_worst_case_label0_cost_four(self, monkeypatch):
+        """Score -1 with label 0 (target +1) should give MSE = 4.
+
+        Expected: (-1 - 1)^2 / 1 = 4.0.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [-1.0],
+        )
+        cost = cost_function(self._DUMMY_THETAS, self._DUMMY_FEATURES, [0])
+        assert cost == pytest.approx(4.0)
+
+    def test_worst_case_label1_cost_four(self, monkeypatch):
+        """Score +1 with label 1 (target -1) should give MSE = 4.
+
+        Expected: (1 - (-1))^2 / 1 = 4.0.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [1.0],
+        )
+        cost = cost_function(self._DUMMY_THETAS, self._DUMMY_FEATURES, [1])
+        assert cost == pytest.approx(4.0)
+
+    def test_mixed_batch_hand_calculated(self, monkeypatch):
+        """Mixed batch of 4 samples with known scores and labels.
+
+        Samples:
+          score=+0.5, label=0, target=+1 → (0.5-1)^2   = 0.25
+          score=-0.5, label=1, target=-1 → (-0.5+1)^2   = 0.25
+          score=+1.0, label=1, target=-1 → (1-(-1))^2   = 4.00
+          score= 0.0, label=0, target=+1 → (0-1)^2      = 1.00
+
+        Expected MSE: (0.25 + 0.25 + 4.00 + 1.00) / 4 = 1.375.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [0.5, -0.5, 1.0, 0.0],
+        )
+        features_batch = [[0.0, 0.0]] * 4
+        labels_batch = [0, 1, 1, 0]
+        cost = cost_function(self._DUMMY_THETAS, features_batch, labels_batch)
+        assert cost == pytest.approx(1.375)
+
+    def test_cost_returns_float(self, monkeypatch):
+        """cost_function must return a single float scalar.
+
+        Expected: return type is float.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [0.0],
+        )
+        cost = cost_function(self._DUMMY_THETAS, self._DUMMY_FEATURES, [0])
+        assert isinstance(cost, float)
+
+    def test_cost_nonnegative(self, monkeypatch):
+        """MSE is always non-negative for any scores and labels.
+
+        Expected: cost >= 0 for arbitrary inputs.
+        """
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_score_batch",
+            lambda thetas, features: [0.3, -0.7, 0.1],
+        )
+        features_batch = [[0.0, 0.0]] * 3
+        labels_batch = [1, 0, 1]
+        cost = cost_function(self._DUMMY_THETAS, features_batch, labels_batch)
+        assert cost >= 0.0

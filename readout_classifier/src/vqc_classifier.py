@@ -143,3 +143,26 @@ def predict_score_batch(
         return [r.expectation() for r in results]
     except (TypeError, RuntimeError):
         return [predict_score(thetas, f) for f in features_array]
+
+
+def cost_function(
+    thetas: list[float],
+    features_batch: list[list[float]],
+    labels_batch: list[int],
+) -> float:
+    """Compute MSE loss between observed <Z> and target values.
+
+    Target mapping: label 0 -> +1, label 1 -> -1.
+
+    Args:
+        thetas: Variational parameters (length N_PARAMS).
+        features_batch: List of feature vectors, each of length 2.
+        labels_batch: List of binary labels (0 or 1), one per feature vector.
+
+    Returns:
+        Mean squared error averaged over the batch.
+    """
+    scores = predict_score_batch(thetas, features_batch)
+    targets = [1.0 - 2.0 * label for label in labels_batch]
+    mse = sum((s - t) ** 2 for s, t in zip(scores, targets)) / len(scores)
+    return mse
