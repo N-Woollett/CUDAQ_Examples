@@ -1,8 +1,10 @@
 import cudaq
+from cudaq import spin
 
 N_QUBITS = 3
 N_LAYERS = 2
 N_PARAMS = N_QUBITS * N_LAYERS  # 6
+HAMILTONIAN = spin.z(N_QUBITS - 1)
 
 
 @cudaq.kernel
