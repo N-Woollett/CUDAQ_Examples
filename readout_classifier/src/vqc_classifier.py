@@ -61,3 +61,31 @@ def classifier_kernel(thetas: list[float], features: list[float]):
 
     for layer in range(N_LAYERS):
         variational_layer(q, thetas, layer * N_QUBITS)
+
+
+def predict_score(thetas: list[float], features: list[float]) -> float:
+    """Return the raw <Z> expectation value from the classifier circuit.
+
+    Args:
+        thetas: Variational parameters (length N_PARAMS).
+        features: Input features (length 2).
+
+    Returns:
+        Expectation value in [-1, +1]. Useful for ROC curves and
+        threshold tuning.
+    """
+    result = cudaq.observe(classifier_kernel, HAMILTONIAN, thetas, features)
+    return result.expectation()
+
+
+def predict(thetas: list[float], features: list[float]) -> int:
+    """Classify a single input as 0 or 1.
+
+    Args:
+        thetas: Variational parameters (length N_PARAMS).
+        features: Input features (length 2).
+
+    Returns:
+        0 if <Z> >= 0, else 1.
+    """
+    return 0 if predict_score(thetas, features) >= 0 else 1

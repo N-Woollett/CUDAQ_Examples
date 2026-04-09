@@ -11,6 +11,8 @@ from readout_classifier.src.vqc_classifier import (
     HAMILTONIAN,
     N_PARAMS,
     N_QUBITS,
+    predict,
+    predict_score,
 )
 
 # CUDA-Q's default simulator uses complex64 (single precision, ~7 decimal
@@ -386,3 +388,62 @@ class TestClassifierCircuit:
         assert -1.0 <= exp_val <= 1.0, (
             f"Expectation value {exp_val} is outside [-1, +1]"
         )
+
+
+# ─── predict / predict_score ──────────────────────────────────────────────
+
+
+_N_SAMPLES = 100
+
+
+class TestPredictAndPredictScore:
+    """Verify predict and predict_score over many random feature vectors."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        """Generate shared random thetas and 100 random feature vectors."""
+        rng = np.random.default_rng(seed=99)
+        self.thetas = rng.uniform(-np.pi, np.pi, size=N_PARAMS).tolist()
+        self.feature_sets = [
+            rng.uniform(-np.pi, np.pi, size=2).tolist()
+            for _ in range(_N_SAMPLES)
+        ]
+
+    def test_predict_returns_zero_or_one(self):
+        """predict must return int values in {0, 1} for all samples.
+
+        Expected: every call returns exactly 0 or 1.
+        """
+        for features in self.feature_sets:
+            label = predict(self.thetas, features)
+            assert label in {0, 1}, (
+                f"predict returned {label!r} for features {features}"
+            )
+
+    def test_predict_score_bounded(self):
+        """predict_score must return a float in [-1, +1] for all samples.
+
+        Expected: every score is a float within the Z-operator eigenvalue bounds.
+        """
+        for features in self.feature_sets:
+            score = predict_score(self.thetas, features)
+            assert isinstance(score, float), (
+                f"predict_score returned {type(score).__name__}, expected float"
+            )
+            assert -1.0 <= score <= 1.0, (
+                f"predict_score returned {score} outside [-1, +1]"
+            )
+
+    def test_predict_consistent_with_predict_score(self):
+        """predict(thetas, f) must equal (0 if predict_score >= 0 else 1).
+
+        Expected: the two functions agree on every sample.
+        """
+        for features in self.feature_sets:
+            score = predict_score(self.thetas, features)
+            expected_label = 0 if score >= 0 else 1
+            actual_label = predict(self.thetas, features)
+            assert actual_label == expected_label, (
+                f"predict={actual_label} but predict_score={score} "
+                f"(expected label {expected_label}) for features {features}"
+            )
