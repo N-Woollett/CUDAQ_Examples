@@ -5,7 +5,11 @@ import pytest
 
 import cudaq
 
-from readout_classifier.src.vqc_classifier import angle_encoding_feature_map
+from readout_classifier.src.vqc_classifier import (
+    angle_encoding_feature_map,
+    HAMILTONIAN,
+    N_QUBITS,
+)
 
 # CUDA-Q's default simulator uses complex64 (single precision, ~7 decimal
 # digits).  All amplitude / probability tolerances must reflect this.
@@ -288,3 +292,46 @@ class TestProbabilities:
         """
         probs = _get_probabilities([1.234, -0.567])
         np.testing.assert_allclose(np.sum(probs), 1.0, atol=_PROB_TOL)
+
+
+# ─── hamiltonian observable ──────────────────────────────────────────────
+
+
+@cudaq.kernel
+def _qubit2_ground():
+    """All qubits in |0⟩ — qubit 2 is in |0⟩ (eigenvalue +1 for Z)."""
+    q = cudaq.qvector(N_QUBITS)
+
+
+@cudaq.kernel
+def _qubit2_excited():
+    """Flip qubit 2 to |1⟩ (eigenvalue -1 for Z)."""
+    q = cudaq.qvector(N_QUBITS)
+    x(q[N_QUBITS - 1])
+
+
+class TestHamiltonian:
+    """Verify the HAMILTONIAN observable measures Z on the readout qubit."""
+
+    def test_qubit_count(self):
+        """HAMILTONIAN acts on exactly one qubit (the readout qubit).
+
+        Expected: qubit_count is 1 (only qubit N_QUBITS-1 has a non-identity term).
+        """
+        assert HAMILTONIAN.qubit_count == 1
+
+    def test_z_expectation_ground_state(self):
+        """All qubits in |0⟩ — Z expectation on qubit 2 should be +1.
+
+        Expected: <Z_2> = +1.0.
+        """
+        result = cudaq.observe(_qubit2_ground, HAMILTONIAN)
+        np.testing.assert_allclose(result.expectation(), 1.0, atol=_AMP_TOL)
+
+    def test_z_expectation_excited_state(self):
+        """Qubit 2 flipped to |1⟩ — Z expectation should be -1.
+
+        Expected: <Z_2> = -1.0.
+        """
+        result = cudaq.observe(_qubit2_excited, HAMILTONIAN)
+        np.testing.assert_allclose(result.expectation(), -1.0, atol=_AMP_TOL)
