@@ -1,6 +1,8 @@
 import cudaq
 
-N_QUBITS = 2
+N_QUBITS = 3
+N_LAYERS = 2
+N_PARAMS = N_QUBITS * N_LAYERS  # 6
 
 
 @cudaq.kernel
@@ -37,3 +39,23 @@ def variational_layer(q: cudaq.qview, thetas: list[float], layer_offset: int):
 
     for i in range(N_QUBITS - 1):
         x.ctrl(q[i], q[i + 1])
+
+
+@cudaq.kernel
+def classifier_kernel(thetas: list[float], features: list[float]):
+    """Full VQC classifier circuit: feature map followed by variational ansatz layers.
+
+    Allocates N_QUBITS qubits, applies the angle-encoding feature map, then
+    applies N_LAYERS variational layers. No explicit measurement is performed;
+    measurement is handled by cudaq.observe.
+
+    Args:
+        thetas: Variational parameters (length N_PARAMS = N_QUBITS * N_LAYERS).
+        features: Input features (length 2) for the angle-encoding map.
+    """
+    q = cudaq.qvector(N_QUBITS)
+
+    angle_encoding_feature_map(q, features)
+
+    for layer in range(N_LAYERS):
+        variational_layer(q, thetas, layer * N_QUBITS)
