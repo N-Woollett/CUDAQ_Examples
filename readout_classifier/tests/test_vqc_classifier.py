@@ -1,5 +1,7 @@
 """Tests for readout_classifier.src.vqc_classifier."""
 
+import time
+
 import numpy as np
 import pytest
 
@@ -12,7 +14,9 @@ from readout_classifier.src.vqc_classifier import (
     N_PARAMS,
     N_QUBITS,
     predict,
+    predict_batch,
     predict_score,
+    predict_score_batch,
 )
 
 # CUDA-Q's default simulator uses complex64 (single precision, ~7 decimal
@@ -447,3 +451,135 @@ class TestPredictAndPredictScore:
                 f"predict={actual_label} but predict_score={score} "
                 f"(expected label {expected_label}) for features {features}"
             )
+
+
+class TestPredictBatch:
+    """Verify batch prediction matches single-sample prediction."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        """Generate shared random thetas and 100 random feature vectors."""
+        rng = np.random.default_rng(seed=42)
+        self.thetas = rng.uniform(-np.pi, np.pi, size=N_PARAMS).tolist()
+        self.feature_sets = [
+            rng.uniform(-np.pi, np.pi, size=2).tolist()
+            for _ in range(_N_SAMPLES)
+        ]
+
+    def test_predict_batch_matches_predict(self):
+        """predict_batch must return the same labels as looping predict.
+
+        Expected: identical label for every sample.
+        """
+        batch_labels = predict_batch(self.thetas, self.feature_sets)
+        assert len(batch_labels) == len(self.feature_sets)
+        for i, features in enumerate(self.feature_sets):
+            assert batch_labels[i] == predict(self.thetas, features), (
+                f"Mismatch at index {i} for features {features}"
+            )
+
+    def test_predict_score_batch_matches_predict_score(self):
+        """predict_score_batch must return the same scores as looping predict_score.
+
+        Expected: identical score for every sample.
+        """
+        batch_scores = predict_score_batch(self.thetas, self.feature_sets)
+        assert len(batch_scores) == len(self.feature_sets)
+        for i, features in enumerate(self.feature_sets):
+            expected = predict_score(self.thetas, features)
+            assert batch_scores[i] == pytest.approx(expected), (
+                f"Score mismatch at index {i}: batch={batch_scores[i]}, "
+                f"single={expected}"
+            )
+
+    def test_predict_batch_returns_zero_or_one(self):
+        """All batch labels must be in {0, 1}.
+
+        Expected: every element is 0 or 1.
+        """
+        batch_labels = predict_batch(self.thetas, self.feature_sets)
+        for i, label in enumerate(batch_labels):
+            assert label in {0, 1}, (
+                f"predict_batch returned {label!r} at index {i}"
+            )
+
+    def test_predict_score_batch_bounded(self):
+        """All batch scores must be floats in [-1, +1].
+
+        Expected: every score is a float within eigenvalue bounds.
+        """
+        batch_scores = predict_score_batch(self.thetas, self.feature_sets)
+        for i, score in enumerate(batch_scores):
+            assert isinstance(score, float), (
+                f"Score at index {i} is {type(score).__name__}, expected float"
+            )
+            assert -1.0 <= score <= 1.0, (
+                f"Score at index {i} is {score}, outside [-1, +1]"
+            )
+
+    def test_empty_batch(self):
+        """Empty input must return empty output.
+
+        Expected: both batch functions return empty lists.
+        """
+        assert predict_batch(self.thetas, []) == []
+        assert predict_score_batch(self.thetas, []) == []
+
+
+_N_PERF_SAMPLES = 200
+
+
+class TestPredictBatchPerformance:
+    """Verify batch prediction shape and timing on 200 samples."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        """Generate shared random thetas and 200 random feature vectors."""
+        rng = np.random.default_rng(seed=77)
+        self.thetas = rng.uniform(-np.pi, np.pi, size=N_PARAMS).tolist()
+        self.feature_sets = [
+            rng.uniform(-np.pi, np.pi, size=2).tolist()
+            for _ in range(_N_PERF_SAMPLES)
+        ]
+
+    def test_output_shape_matches_input(self):
+        """predict_batch output length must equal the number of input samples.
+
+        Expected: len(labels) == 200 and len(scores) == 200.
+        """
+        labels = predict_batch(self.thetas, self.feature_sets)
+        scores = predict_score_batch(self.thetas, self.feature_sets)
+        assert len(labels) == _N_PERF_SAMPLES
+        assert len(scores) == _N_PERF_SAMPLES
+
+    def test_batch_no_slower_than_sequential(self):
+        """predict_batch on 200 samples must not regress vs 200 sequential calls.
+
+        Timing: batch wall-clock time <= 1.5x sequential wall-clock time.
+        The 1.5x margin accounts for measurement noise; in practice batch
+        should be similar or faster.
+        """
+        # Warm up both paths to avoid first-call JIT overhead.
+        predict_batch(self.thetas, self.feature_sets[:1])
+        predict(self.thetas, self.feature_sets[0])
+
+        # Time sequential.
+        t0 = time.perf_counter()
+        for f in self.feature_sets:
+            predict(self.thetas, f)
+        sequential_time = time.perf_counter() - t0
+
+        # Time batch.
+        t0 = time.perf_counter()
+        predict_batch(self.thetas, self.feature_sets)
+        batch_time = time.perf_counter() - t0
+
+        print(
+            f"\nsequential={sequential_time:.3f}s, "
+            f"batch={batch_time:.3f}s, "
+            f"ratio={batch_time / sequential_time:.2f}x"
+        )
+        assert batch_time <= sequential_time * 1.5, (
+            f"Batch ({batch_time:.3f}s) was >1.5x slower than sequential "
+            f"({sequential_time:.3f}s)"
+        )

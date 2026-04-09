@@ -1,3 +1,5 @@
+import numpy as np
+
 import cudaq
 from cudaq import spin
 
@@ -89,3 +91,55 @@ def predict(thetas: list[float], features: list[float]) -> int:
         0 if <Z> >= 0, else 1.
     """
     return 0 if predict_score(thetas, features) >= 0 else 1
+
+
+def predict_batch(
+    thetas: list[float], features_array: list[list[float]]
+) -> list[int]:
+    """Classify a batch of inputs as 0 or 1.
+
+    Uses cudaq.observe broadcasting to evaluate all feature vectors in a
+    single call when supported, falling back to a sequential loop otherwise.
+
+    Args:
+        thetas: Variational parameters (length N_PARAMS).
+        features_array: List of feature vectors, each of length 2.
+
+    Returns:
+        List of labels (0 or 1), one per feature vector.
+    """
+    scores = predict_score_batch(thetas, features_array)
+    return [0 if s >= 0 else 1 for s in scores]
+
+
+def predict_score_batch(
+    thetas: list[float], features_array: list[list[float]]
+) -> list[float]:
+    """Return raw <Z> expectation values for a batch of inputs.
+
+    Uses cudaq.observe broadcasting to evaluate all feature vectors in a
+    single call when supported, falling back to a sequential loop otherwise.
+
+    Args:
+        thetas: Variational parameters (length N_PARAMS).
+        features_array: List of feature vectors, each of length 2.
+
+    Returns:
+        List of expectation values in [-1, +1], one per feature vector.
+    """
+    n = len(features_array)
+    if n == 0:
+        return []
+
+    try:
+        thetas_broadcast = np.tile(thetas, (n, 1))
+        features_broadcast = np.array(features_array)
+        results = cudaq.observe(
+            classifier_kernel,
+            HAMILTONIAN,
+            thetas_broadcast,
+            features_broadcast,
+        )
+        return [r.expectation() for r in results]
+    except (TypeError, RuntimeError):
+        return [predict_score(thetas, f) for f in features_array]
