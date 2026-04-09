@@ -22,6 +22,7 @@ from readout_classifier.src.vqc_classifier import (
     predict_batch,
     predict_score,
     predict_score_batch,
+    train,
 )
 
 # CUDA-Q's default simulator uses complex64 (single precision, ~7 decimal
@@ -782,3 +783,47 @@ class TestClassifierConfig:
         cfg = ClassifierConfig()
         with pytest.raises(AttributeError):
             cfg.n_qubits = 5
+
+    def test_max_iterations_default(self):
+        """ClassifierConfig.max_iterations defaults to 200.
+
+        Expected: DEFAULT_CONFIG.max_iterations == 200.
+        """
+        assert DEFAULT_CONFIG.max_iterations == 200
+
+    def test_max_iterations_custom(self):
+        """ClassifierConfig accepts a custom max_iterations value.
+
+        Expected: ClassifierConfig(max_iterations=50).max_iterations == 50.
+        """
+        cfg = ClassifierConfig(max_iterations=50)
+        assert cfg.max_iterations == 50
+
+
+class TestTrain:
+    """Tests for the train() function and COBYLA optimizer integration."""
+
+    def test_cobyla_converges_on_quadratic(self, monkeypatch):
+        """COBYLA minimises a trivial quadratic f(x) = (x-1)^2 to x ≈ 1.0.
+
+        Strategy: monkeypatch cost_function so that train() optimises a pure
+        quadratic with a known minimum, independent of any quantum circuit.
+
+        Expected: optimal parameter ≈ 1.0 (atol=0.05) within 50 iterations.
+        """
+        import readout_classifier.src.vqc_classifier as mod
+
+        def quadratic_cost(thetas, features_batch, labels_batch):
+            return (thetas[0] - 1.0) ** 2
+
+        monkeypatch.setattr(mod, "cost_function", quadratic_cost)
+
+        config = ClassifierConfig(n_qubits=1, n_layers=1, max_iterations=50)
+        optimal_cost, optimal_params = train(
+            features_batch=[[0.0]],
+            labels_batch=[0],
+            config=config,
+        )
+
+        assert optimal_cost == pytest.approx(0.0, abs=0.01)
+        assert optimal_params[0] == pytest.approx(1.0, abs=0.05)

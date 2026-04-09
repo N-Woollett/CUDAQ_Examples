@@ -13,9 +13,11 @@ class ClassifierConfig:
     Attributes:
         n_qubits: Number of qubits in the circuit.
         n_layers: Number of variational layers.
+        max_iterations: Maximum optimizer iterations.
     """
     n_qubits: int = 3
     n_layers: int = 2
+    max_iterations: int = 200
 
     @property
     def n_params(self) -> int:
@@ -184,3 +186,31 @@ def cost_function(
     targets = [1.0 - 2.0 * label for label in labels_batch]
     mse = sum((s - t) ** 2 for s, t in zip(scores, targets)) / len(scores)
     return mse
+
+
+def train(
+    features_batch: list[list[float]],
+    labels_batch: list[int],
+    config: ClassifierConfig = DEFAULT_CONFIG,
+) -> tuple[float, list[float]]:
+    """Train the classifier using COBYLA optimization.
+
+    Args:
+        features_batch: Training feature vectors, each of length 2.
+        labels_batch: Binary labels (0 or 1), one per feature vector.
+        config: Classifier configuration (controls n_params and max_iterations).
+
+    Returns:
+        (optimal_cost, optimal_parameters) from the optimizer.
+    """
+    optimizer = cudaq.optimizers.COBYLA()
+    optimizer.max_iterations = config.max_iterations
+
+    def wrapped_cost(thetas: list[float]) -> tuple[float, list[float]]:
+        cost = cost_function(thetas, features_batch, labels_batch)
+        return cost, []
+
+    optimal_cost, optimal_params = optimizer.optimize(
+        config.n_params, wrapped_cost
+    )
+    return optimal_cost, optimal_params
