@@ -216,6 +216,46 @@ def train_step(
     return optimal_params, optimal_cost
 
 
+def train_epoch(
+    thetas: list[float],
+    train_features: list[list[float]],
+    train_labels: list[int],
+    batch_size: int,
+    optimizer,
+) -> tuple[list[float], float]:
+    """Run one epoch: shuffle data, split into mini-batches, train on each.
+
+    Args:
+        thetas: Current parameter values (length n_params).
+        train_features: All training feature vectors, each of length 2.
+        train_labels: Binary labels (0 or 1), one per feature vector.
+        batch_size: Number of samples per mini-batch.
+        optimizer: A CUDAQ optimizer instance (e.g. cudaq.optimizers.COBYLA()).
+
+    Returns:
+        (updated_thetas, avg_cost) — parameters after the full epoch and
+        the mean cost across all mini-batches.
+    """
+    n = len(train_features)
+    indices = np.random.permutation(n)
+
+    shuffled_features = [train_features[i] for i in indices]
+    shuffled_labels = [train_labels[i] for i in indices]
+
+    total_cost = 0.0
+    n_batches = 0
+
+    for start in range(0, n, batch_size):
+        batch_features = shuffled_features[start : start + batch_size]
+        batch_labels = shuffled_labels[start : start + batch_size]
+        thetas, cost = train_step(thetas, batch_features, batch_labels, optimizer)
+        total_cost += cost
+        n_batches += 1
+
+    avg_cost = total_cost / n_batches
+    return thetas, avg_cost
+
+
 def train(
     features_batch: list[list[float]],
     labels_batch: list[int],

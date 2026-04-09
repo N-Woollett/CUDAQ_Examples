@@ -23,6 +23,7 @@ from readout_classifier.src.vqc_classifier import (
     predict_score,
     predict_score_batch,
     train,
+    train_epoch,
     train_step,
 )
 
@@ -991,3 +992,197 @@ class TestTrainStep:
         )
 
         assert step_cost < initial_cost
+
+
+class TestTrainEpoch:
+    """Tests for the train_epoch function."""
+
+    def test_returns_updated_thetas_and_avg_cost(self, monkeypatch):
+        """train_epoch returns (list[float], float)."""
+
+        def fake_cost(thetas, features, labels):
+            return sum(t**2 for t in thetas)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.cost_function", fake_cost
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 5
+        thetas = [0.5, 0.5]
+        features = [[0.1, 0.2]] * 10
+        labels = [0] * 10
+
+        updated_thetas, avg_cost = train_epoch(
+            thetas, features, labels, batch_size=5, optimizer=optimizer
+        )
+
+        assert isinstance(updated_thetas, list)
+        assert len(updated_thetas) == 2
+        assert isinstance(avg_cost, float)
+
+    def test_shuffles_data(self, monkeypatch):
+        """Verify that data is shuffled by seeding the RNG."""
+        call_log = []
+
+        def fake_cost(thetas, features, labels):
+            call_log.append(list(labels))
+            return 0.0
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.cost_function", fake_cost
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 1
+        thetas = [0.0]
+        features = [[float(i), 0.0] for i in range(6)]
+        labels = [0, 0, 0, 1, 1, 1]
+
+        np.random.seed(42)
+        train_epoch(thetas, features, labels, batch_size=6, optimizer=optimizer)
+        first_run_labels = call_log[-1]
+
+        np.random.seed(99)
+        train_epoch(thetas, features, labels, batch_size=6, optimizer=optimizer)
+        second_run_labels = call_log[-1]
+
+        # With different seeds, the label orderings should differ
+        # (astronomically unlikely to match for 6 elements with 2 seeds)
+        assert first_run_labels != second_run_labels
+
+    def test_correct_number_of_batches(self, monkeypatch):
+        """Verify train_step is called once per mini-batch."""
+        step_count = 0
+        original_train_step = None
+
+        import readout_classifier.src.vqc_classifier as vqc_mod
+
+        original_train_step = vqc_mod.train_step
+
+        def counting_train_step(thetas, batch_features, batch_labels, optimizer):
+            nonlocal step_count
+            step_count += 1
+            return thetas, 1.0
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_step",
+            counting_train_step,
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 1
+        thetas = [0.0]
+        features = [[0.0, 0.0]] * 10
+        labels = [0] * 10
+
+        # batch_size=3 with 10 samples -> 4 batches (3+3+3+1)
+        train_epoch(thetas, features, labels, batch_size=3, optimizer=optimizer)
+        assert step_count == 4
+
+    def test_avg_cost_is_mean_of_batch_costs(self, monkeypatch):
+        """Average cost should be the mean of per-batch costs."""
+        batch_costs = [1.0, 2.0, 3.0]
+        call_index = 0
+
+        def fake_train_step(thetas, batch_features, batch_labels, optimizer):
+            nonlocal call_index
+            cost = batch_costs[call_index]
+            call_index += 1
+            return thetas, cost
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_step",
+            fake_train_step,
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        thetas = [0.0]
+        features = [[0.0, 0.0]] * 9
+        labels = [0] * 9
+
+        _, avg_cost = train_epoch(
+            thetas, features, labels, batch_size=3, optimizer=optimizer
+        )
+
+        assert avg_cost == pytest.approx(2.0)
+
+    def test_handles_incomplete_last_batch(self, monkeypatch):
+        """When n_samples is not divisible by batch_size, the last
+        batch should contain the remainder."""
+        batch_sizes_seen = []
+
+        def fake_train_step(thetas, batch_features, batch_labels, optimizer):
+            batch_sizes_seen.append(len(batch_features))
+            return thetas, 0.0
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_step",
+            fake_train_step,
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        thetas = [0.0]
+        features = [[0.0, 0.0]] * 7
+        labels = [0] * 7
+
+        train_epoch(thetas, features, labels, batch_size=3, optimizer=optimizer)
+
+        assert batch_sizes_seen == [3, 3, 1]
+
+    def test_converges_on_quadratic(self, monkeypatch):
+        """Multiple epochs on a quadratic should converge toward the minimum."""
+
+        def fake_cost(thetas, features, labels):
+            return sum((t - 1.0) ** 2 for t in thetas)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.cost_function", fake_cost
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 50
+        thetas = [0.0, 0.0]
+        features = [[0.0, 0.0]] * 12
+        labels = [0] * 12
+
+        for _ in range(5):
+            thetas, avg_cost = train_epoch(
+                thetas, features, labels, batch_size=4, optimizer=optimizer
+            )
+
+        assert avg_cost == pytest.approx(0.0, abs=0.05)
+        for t in thetas:
+            assert t == pytest.approx(1.0, abs=0.1)
+
+    def test_1000_samples_batch_32(self, monkeypatch):
+        """1000 samples with batch_size=32 produces ceil(1000/32)=32 batch
+        updates and the average cost is a finite positive number."""
+        import math
+
+        step_count = 0
+
+        def counting_train_step(thetas, batch_features, batch_labels, optimizer):
+            nonlocal step_count
+            step_count += 1
+            cost = sum(t**2 for t in thetas) + 0.1
+            return thetas, cost
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_step",
+            counting_train_step,
+        )
+
+        optimizer = cudaq.optimizers.COBYLA()
+        optimizer.max_iterations = 1
+        thetas = [0.5, 0.5]
+        features = [[float(i), float(i)] for i in range(1000)]
+        labels = [i % 2 for i in range(1000)]
+
+        updated_thetas, avg_cost = train_epoch(
+            thetas, features, labels, batch_size=32, optimizer=optimizer
+        )
+
+        assert step_count == math.ceil(1000 / 32)  # 32 batches
+        assert math.isfinite(avg_cost)
+        assert avg_cost > 0
