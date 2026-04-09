@@ -1,8 +1,10 @@
 """Preprocessing utilities for IQ readout data."""
 
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple, Optional
+from pathlib import Path
+from typing import Any, NamedTuple, Optional, Union
 
+import joblib
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
@@ -310,3 +312,56 @@ def preprocess_pipeline(
         scaler=scaler,
         pca=pca,
     )
+
+
+def save_pipeline(
+    path: Union[str, Path],
+    scaler: StandardScaler,
+    pca: Optional[PCA] = None,
+) -> None:
+    """Persist the fitted preprocessing transforms to disk.
+
+    Saves the scaler and (optionally) the PCA object so that
+    :func:`standardise`, :func:`pca_rotate`, and :func:`angle_encode`
+    can be re-applied to new data without re-fitting on the training
+    set.
+
+    Args:
+        path (str | Path): Destination file path.  The ``.joblib``
+            extension is recommended but not enforced.
+        scaler (StandardScaler): The fitted scaler from the training
+            run.
+        pca (PCA | None): The fitted PCA object, or *None* if PCA was
+            not used.
+    """
+    joblib.dump({"scaler": scaler, "pca": pca}, path)
+
+
+def load_pipeline(
+    path: Union[str, Path],
+) -> tuple[StandardScaler, Optional[PCA]]:
+    """Load previously saved preprocessing transforms from disk.
+
+    Args:
+        path (str | Path): Path to the file written by
+            :func:`save_pipeline`.
+
+    Returns:
+        tuple[StandardScaler, PCA | None]: The fitted scaler and PCA
+        object (or *None* if PCA was not used when the pipeline was
+        saved).
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        KeyError: If the file does not contain the expected keys.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"No such file: '{path}'")
+
+    blob = joblib.load(path)
+
+    if "scaler" not in blob:
+        raise KeyError("File does not contain a 'scaler' entry")
+
+    return blob["scaler"], blob.get("pca")

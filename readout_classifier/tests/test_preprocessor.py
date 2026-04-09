@@ -8,6 +8,7 @@ from sklearn.decomposition import PCA
 from readout_classifier.src.preprocessor import (
     StandardScaler, PipelineParams, PipelineResult,
     standardise, angle_encode, pca_rotate, split_dataset, preprocess_pipeline,
+    save_pipeline, load_pipeline,
 )
 
 
@@ -625,3 +626,110 @@ class TestPreprocessPipeline:
         iq, labels = mock_dataset
         with pytest.raises(TypeError):
             preprocess_pipeline(iq, labels, {"split_ratio": (0.7, 0.15, 0.15)})
+
+
+# ─── save / load pipeline ──────────────────────────────────────────────────────
+
+class TestSaveLoadPipeline:
+    """Tests for save_pipeline and load_pipeline."""
+
+    @pytest.fixture
+    def fitted_result(self):
+        """Run the full pipeline and return the PipelineResult."""
+        rng = np.random.default_rng(42)
+        iq = rng.normal(size=(1000, 2))
+        labels = np.zeros(1000, dtype=int)
+        labels[:300] = 1
+        rng.shuffle(labels)
+        return preprocess_pipeline(iq, labels, PipelineParams())
+
+    def test_roundtrip_without_pca(self, tmp_path, fitted_result):
+        """Save and reload a pipeline that has no PCA.
+
+        Expected: loaded scaler matches the original; loaded PCA is None.
+        """
+        path = tmp_path / "pipe.joblib"
+        save_pipeline(path, fitted_result.scaler, pca=None)
+
+        scaler, pca = load_pipeline(path)
+
+        assert pca is None
+        np.testing.assert_array_equal(scaler.mu, fitted_result.scaler.mu)
+        np.testing.assert_array_equal(scaler.sigma, fitted_result.scaler.sigma)
+
+    def test_roundtrip_with_pca(self, tmp_path):
+        """Save and reload a pipeline that includes PCA.
+
+        Expected: loaded scaler and PCA reproduce the same transform.
+        """
+        rng = np.random.default_rng(42)
+        iq = rng.normal(size=(1000, 2))
+        labels = np.zeros(1000, dtype=int)
+        labels[:300] = 1
+        rng.shuffle(labels)
+        result = preprocess_pipeline(
+            iq, labels, PipelineParams(use_pca=True, pca_components=2)
+        )
+
+        path = tmp_path / "pipe_pca.joblib"
+        save_pipeline(path, result.scaler, pca=result.pca)
+
+        scaler, pca = load_pipeline(path)
+
+        np.testing.assert_array_equal(scaler.mu, result.scaler.mu)
+        np.testing.assert_array_equal(scaler.sigma, result.scaler.sigma)
+        assert pca is not None
+        np.testing.assert_array_equal(
+            pca.components_, result.pca.components_
+        )
+
+    def test_loaded_scaler_reproduces_transform(self, tmp_path, fitted_result):
+        """A loaded scaler must produce identical output to the original.
+
+        Expected: standardising the same data with the original and
+        loaded scalers yields bit-identical results.
+        """
+        path = tmp_path / "pipe.joblib"
+        save_pipeline(path, fitted_result.scaler)
+
+        scaler, _ = load_pipeline(path)
+
+        rng = np.random.default_rng(99)
+        new_data = rng.normal(size=(50, 2))
+        expected, _ = standardise(new_data, scaler=fitted_result.scaler)
+        actual, _ = standardise(new_data, scaler=scaler)
+
+        np.testing.assert_array_equal(actual, expected)
+
+    def test_load_missing_file(self, tmp_path):
+        """Loading from a non-existent path should raise FileNotFoundError.
+
+        Expected: raises FileNotFoundError.
+        """
+        with pytest.raises(FileNotFoundError):
+            load_pipeline(tmp_path / "nonexistent.joblib")
+
+    def test_load_corrupt_file(self, tmp_path):
+        """Loading a file without a 'scaler' key should raise KeyError.
+
+        Expected: raises KeyError mentioning 'scaler'.
+        """
+        import joblib
+        path = tmp_path / "bad.joblib"
+        joblib.dump({"foo": 1}, path)
+
+        with pytest.raises(KeyError, match="scaler"):
+            load_pipeline(path)
+
+    def test_string_path_accepted(self, tmp_path, fitted_result):
+        """Both save and load should accept plain string paths.
+
+        Expected: round-trip succeeds with str instead of Path.
+        """
+        path = str(tmp_path / "pipe_str.joblib")
+        save_pipeline(path, fitted_result.scaler)
+
+        scaler, pca = load_pipeline(path)
+
+        assert pca is None
+        np.testing.assert_array_equal(scaler.mu, fitted_result.scaler.mu)
