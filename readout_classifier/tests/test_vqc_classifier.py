@@ -7,7 +7,9 @@ import cudaq
 
 from readout_classifier.src.vqc_classifier import (
     angle_encoding_feature_map,
+    classifier_kernel,
     HAMILTONIAN,
+    N_PARAMS,
     N_QUBITS,
 )
 
@@ -335,3 +337,52 @@ class TestHamiltonian:
         """
         result = cudaq.observe(_qubit2_excited, HAMILTONIAN)
         np.testing.assert_allclose(result.expectation(), -1.0, atol=_AMP_TOL)
+
+
+# ─── full classifier circuit ────────────────────────────────────────────────
+
+
+class TestClassifierCircuit:
+    """Verify the full classifier_kernel circuit structure and observable."""
+
+    def test_circuit_diagram_gate_counts(self):
+        """Use cudaq.draw() to verify the circuit contains the expected gates.
+
+        Encoding: 2 Ry + 2 Rz = 4 gates
+        2 variational layers: 2 * 3 Ry = 6 Ry, 2 * 2 CNOT = 4 CNOT
+        Total: 8 Ry + 2 Rz + 4 CNOT = 14 gates
+        """
+        thetas = [0.0] * N_PARAMS
+        features = [0.0, 0.0]
+
+        diagram = cudaq.draw(classifier_kernel, thetas, features)
+        print(diagram)
+
+        # Count gate occurrences in the diagram string (case-insensitive)
+        diagram_lower = diagram.lower()
+        ry_count = diagram_lower.count("ry")
+        rz_count = diagram_lower.count("rz")
+
+        assert ry_count == 8, (
+            f"Expected 8 Ry gates (2 encoding + 6 variational), got {ry_count}"
+        )
+        assert rz_count == 2, (
+            f"Expected 2 Rz gates (encoding only), got {rz_count}"
+        )
+
+    def test_observe_expectation_bounded(self):
+        """cudaq.observe with random thetas must yield expectation in [-1, +1].
+
+        The Z operator has eigenvalues +/-1, so the expectation value of
+        spin.z(2) is bounded by [-1, +1] for any state.
+        """
+        rng = np.random.default_rng(seed=42)
+        thetas = rng.uniform(-np.pi, np.pi, size=N_PARAMS).tolist()
+        features = rng.uniform(-np.pi, np.pi, size=2).tolist()
+
+        result = cudaq.observe(classifier_kernel, HAMILTONIAN, thetas, features)
+        exp_val = result.expectation()
+
+        assert -1.0 <= exp_val <= 1.0, (
+            f"Expectation value {exp_val} is outside [-1, +1]"
+        )
