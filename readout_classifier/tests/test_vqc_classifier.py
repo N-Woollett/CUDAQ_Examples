@@ -10,8 +10,12 @@ import cudaq
 from readout_classifier.src.vqc_classifier import (
     angle_encoding_feature_map,
     classifier_kernel,
+    ClassifierConfig,
     cost_function,
+    DEFAULT_CONFIG,
     HAMILTONIAN,
+    make_classifier,
+    N_LAYERS,
     N_PARAMS,
     N_QUBITS,
     predict,
@@ -688,3 +692,93 @@ class TestCostFunction:
         labels_batch = [1, 0, 1]
         cost = cost_function(self._DUMMY_THETAS, features_batch, labels_batch)
         assert cost >= 0.0
+
+
+# ─── ClassifierConfig & make_classifier ────────────────────────────────────
+
+
+class TestClassifierConfig:
+    """Verify ClassifierConfig drives kernel construction for arbitrary sizes."""
+
+    def test_custom_config_n_params(self):
+        """ClassifierConfig(4, 3) must report n_params = 12.
+
+        Expected: 4 qubits * 3 layers = 12 variational parameters.
+        """
+        cfg = ClassifierConfig(n_qubits=4, n_layers=3)
+        assert cfg.n_params == 12
+
+    def test_custom_config_observe(self):
+        """make_classifier with (4, 3) must produce a runnable circuit.
+
+        Expected: cudaq.observe returns an expectation value in [-1, +1].
+        """
+        cfg = ClassifierConfig(n_qubits=4, n_layers=3)
+        kernel, hamiltonian = make_classifier(cfg)
+
+        rng = np.random.default_rng(seed=123)
+        thetas = rng.uniform(-np.pi, np.pi, size=cfg.n_params).tolist()
+        features = rng.uniform(-np.pi, np.pi, size=2).tolist()
+
+        result = cudaq.observe(kernel, hamiltonian, thetas, features)
+        exp_val = result.expectation()
+
+        assert -1.0 <= exp_val <= 1.0, (
+            f"Expectation value {exp_val} outside [-1, +1] for config (4, 3)"
+        )
+
+    def test_custom_config_hamiltonian_qubit_index(self):
+        """Hamiltonian from (4, 3) config must target qubit 3 (n_qubits - 1).
+
+        Expected: spin.z(3) acts on 1 qubit.
+        """
+        cfg = ClassifierConfig(n_qubits=4, n_layers=3)
+        assert cfg.hamiltonian.qubit_count == 1
+
+    def test_default_config_n_params(self):
+        """ClassifierConfig(3, 2) must report n_params = 6.
+
+        Expected: 3 qubits * 2 layers = 6 variational parameters.
+        """
+        cfg = ClassifierConfig(n_qubits=3, n_layers=2)
+        assert cfg.n_params == 6
+
+    def test_default_config_observe(self):
+        """make_classifier with (3, 2) must produce the same results as the
+        module-level classifier_kernel.
+
+        Expected: cudaq.observe returns the same expectation for both kernels.
+        """
+        cfg = ClassifierConfig(n_qubits=3, n_layers=2)
+        kernel, hamiltonian = make_classifier(cfg)
+
+        rng = np.random.default_rng(seed=456)
+        thetas = rng.uniform(-np.pi, np.pi, size=cfg.n_params).tolist()
+        features = rng.uniform(-np.pi, np.pi, size=2).tolist()
+
+        result_factory = cudaq.observe(kernel, hamiltonian, thetas, features)
+        result_module = cudaq.observe(classifier_kernel, HAMILTONIAN, thetas, features)
+
+        np.testing.assert_allclose(
+            result_factory.expectation(),
+            result_module.expectation(),
+            atol=_AMP_TOL,
+        )
+
+    def test_default_config_matches_module_constants(self):
+        """DEFAULT_CONFIG fields must agree with module-level N_QUBITS / N_PARAMS.
+
+        Expected: DEFAULT_CONFIG.n_qubits == N_QUBITS, etc.
+        """
+        assert DEFAULT_CONFIG.n_qubits == N_QUBITS
+        assert DEFAULT_CONFIG.n_layers == N_LAYERS
+        assert DEFAULT_CONFIG.n_params == N_PARAMS
+
+    def test_config_is_frozen(self):
+        """ClassifierConfig must be immutable (frozen dataclass).
+
+        Expected: assigning to n_qubits raises FrozenInstanceError.
+        """
+        cfg = ClassifierConfig()
+        with pytest.raises(AttributeError):
+            cfg.n_qubits = 5

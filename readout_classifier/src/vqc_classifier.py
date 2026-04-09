@@ -1,12 +1,36 @@
+from dataclasses import dataclass
+
 import numpy as np
 
 import cudaq
 from cudaq import spin
 
-N_QUBITS = 3
-N_LAYERS = 2
-N_PARAMS = N_QUBITS * N_LAYERS  # 6
-HAMILTONIAN = spin.z(N_QUBITS - 1)
+
+@dataclass(frozen=True)
+class ClassifierConfig:
+    """Circuit geometry for the VQC readout classifier.
+
+    Attributes:
+        n_qubits: Number of qubits in the circuit.
+        n_layers: Number of variational layers.
+    """
+    n_qubits: int = 3
+    n_layers: int = 2
+
+    @property
+    def n_params(self) -> int:
+        return self.n_qubits * self.n_layers
+
+    @property
+    def hamiltonian(self) -> spin.SpinOperator:
+        return spin.z(self.n_qubits - 1)
+
+
+DEFAULT_CONFIG = ClassifierConfig()
+
+N_QUBITS = DEFAULT_CONFIG.n_qubits
+N_LAYERS = DEFAULT_CONFIG.n_layers
+N_PARAMS = DEFAULT_CONFIG.n_params
 
 
 @cudaq.kernel
@@ -14,10 +38,10 @@ def angle_encoding_feature_map(q: cudaq.qview, features: list[float]):
     """
     Angle-encoding feature map for the IQ readout classifier.
     Applies Ry and Rz rotations to qubits based on the input features.
-    
+
     Args:
         q (cudaq.qview): The quantum register view.
-        features (list[float]): The encoded features (length 2), usually the standardized 
+        features (list[float]): The encoded features (length 2), usually the standardized
                                 and angle-encoded I and Q values.
     """
     ry(features[0], q[0])
@@ -26,43 +50,37 @@ def angle_encoding_feature_map(q: cudaq.qview, features: list[float]):
     rz(features[1], q[1])
 
 
-@cudaq.kernel
-def variational_layer(q: cudaq.qview, thetas: list[float], layer_offset: int):
-    """Single variational layer: Ry rotation on each qubit followed by a CNOT ladder.
+def make_classifier(
+    config: ClassifierConfig = DEFAULT_CONFIG,
+) -> tuple:
+    """Build a classifier kernel and Hamiltonian for the given config.
 
-    Applies Ry(thetas[layer_offset + i]) to qubit i for i in 0..N_QUBITS-1,
-    then cascading CNOT gates from qubit i to qubit i+1.
-
-    Args:
-        q: The quantum register view (must have at least N_QUBITS qubits).
-        thetas: Full parameter vector shared across all layers.
-        layer_offset: Starting index into thetas for this layer's parameters.
+    Returns:
+        (kernel, hamiltonian) where *kernel* is a ``@cudaq.kernel`` accepting
+        ``(thetas: list[float], features: list[float])`` and *hamiltonian* is
+        the Z observable on the readout qubit.
     """
-    for i in range(N_QUBITS):
-        ry(thetas[layer_offset + i], q[i])
+    n_qubits = config.n_qubits
+    n_layers = config.n_layers
 
-    for i in range(N_QUBITS - 1):
-        x.ctrl(q[i], q[i + 1])
+    @cudaq.kernel
+    def _variational_layer(q: cudaq.qview, thetas: list[float], layer_offset: int):
+        for i in range(n_qubits):
+            ry(thetas[layer_offset + i], q[i])
+        for i in range(n_qubits - 1):
+            x.ctrl(q[i], q[i + 1])
+
+    @cudaq.kernel
+    def kernel(thetas: list[float], features: list[float]):
+        q = cudaq.qvector(n_qubits)
+        angle_encoding_feature_map(q, features)
+        for layer in range(n_layers):
+            _variational_layer(q, thetas, layer * n_qubits)
+
+    return kernel, config.hamiltonian
 
 
-@cudaq.kernel
-def classifier_kernel(thetas: list[float], features: list[float]):
-    """Full VQC classifier circuit: feature map followed by variational ansatz layers.
-
-    Allocates N_QUBITS qubits, applies the angle-encoding feature map, then
-    applies N_LAYERS variational layers. No explicit measurement is performed;
-    measurement is handled by cudaq.observe.
-
-    Args:
-        thetas: Variational parameters (length N_PARAMS = N_QUBITS * N_LAYERS).
-        features: Input features (length 2) for the angle-encoding map.
-    """
-    q = cudaq.qvector(N_QUBITS)
-
-    angle_encoding_feature_map(q, features)
-
-    for layer in range(N_LAYERS):
-        variational_layer(q, thetas, layer * N_QUBITS)
+classifier_kernel, HAMILTONIAN = make_classifier()
 
 
 def predict_score(thetas: list[float], features: list[float]) -> float:
