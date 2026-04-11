@@ -256,6 +256,69 @@ def train_epoch(
     return thetas, avg_cost
 
 
+def training_loop(
+    train_data: tuple[list[list[float]], list[int]],
+    val_data: tuple[list[list[float]], list[int]],
+    config: ClassifierConfig = DEFAULT_CONFIG,
+    *,
+    n_epochs: int = 50,
+    batch_size: int = 32,
+    patience: int = 5,
+) -> tuple[list[float], list[float], list[float]]:
+    """Run multiple epochs of training with early stopping on validation accuracy.
+
+    Args:
+        train_data: (features, labels) for training.
+        val_data: (features, labels) for validation.
+        config: Classifier configuration.
+        n_epochs: Maximum number of epochs.
+        batch_size: Mini-batch size passed to train_epoch.
+        patience: Stop if validation accuracy does not improve for this many epochs.
+
+    Returns:
+        (best_thetas, cost_history, accuracy_history) — the parameters with
+        the highest validation accuracy, plus per-epoch cost and accuracy lists.
+    """
+    train_features, train_labels = train_data
+    val_features, val_labels = val_data
+
+    optimizer = cudaq.optimizers.COBYLA()
+    optimizer.max_iterations = config.max_iterations
+
+    thetas = np.random.uniform(-np.pi, np.pi, config.n_params).tolist()
+
+    cost_history: list[float] = []
+    accuracy_history: list[float] = []
+
+    best_thetas = list(thetas)
+    best_accuracy = -1.0
+    epochs_without_improvement = 0
+
+    for _ in range(n_epochs):
+        thetas, avg_cost = train_epoch(
+            thetas, train_features, train_labels, batch_size, optimizer
+        )
+        cost_history.append(avg_cost)
+
+        predictions = predict_batch(thetas, val_features)
+        accuracy = sum(
+            p == l for p, l in zip(predictions, val_labels)
+        ) / len(val_labels)
+        accuracy_history.append(accuracy)
+
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_thetas = list(thetas)
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            break
+
+    return best_thetas, cost_history, accuracy_history
+
+
 def train(
     features_batch: list[list[float]],
     labels_batch: list[int],

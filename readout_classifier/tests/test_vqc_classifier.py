@@ -25,6 +25,7 @@ from readout_classifier.src.vqc_classifier import (
     train,
     train_epoch,
     train_step,
+    training_loop,
 )
 
 # CUDA-Q's default simulator uses complex64 (single precision, ~7 decimal
@@ -1186,3 +1187,351 @@ class TestTrainEpoch:
         assert step_count == math.ceil(1000 / 32)  # 32 batches
         assert math.isfinite(avg_cost)
         assert avg_cost > 0
+
+
+class TestTrainingLoop:
+    """Tests for training_loop()."""
+
+    @staticmethod
+    def _make_fake_train_epoch(cost_sequence, accuracy_sequence):
+        """Return a (fake_train_epoch, fake_predict_batch) pair driven by sequences.
+
+        Each call to fake_train_epoch pops the next cost; each call to
+        fake_predict_batch returns labels crafted to hit the next accuracy.
+        """
+        epoch_idx = [0]
+
+        def fake_train_epoch(thetas, train_features, train_labels, batch_size, optimizer):
+            cost = cost_sequence[epoch_idx[0]]
+            # Slightly shift thetas so we can verify best_thetas tracking
+            updated = [t + 0.01 * (epoch_idx[0] + 1) for t in thetas]
+            epoch_idx[0] += 1
+            return updated, cost
+
+        call_idx = [0]
+
+        def fake_predict_batch(thetas, features_array):
+            acc = accuracy_sequence[call_idx[0]]
+            n = len(features_array)
+            n_correct = int(round(acc * n))
+            # Return n_correct 0s (matching label 0) then the rest as 1 (wrong)
+            preds = [0] * n_correct + [1] * (n - n_correct)
+            call_idx[0] += 1
+            return preds
+
+        return fake_train_epoch, fake_predict_batch
+
+    def test_returns_best_thetas_cost_history_accuracy_history(self, monkeypatch):
+        """training_loop returns a 3-tuple of (best_thetas, cost_history, accuracy_history)."""
+        costs = [0.9, 0.8, 0.7]
+        accs = [0.5, 0.8, 0.6]
+        fake_epoch, fake_predict = self._make_fake_train_epoch(costs, accs)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", fake_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        best_thetas, cost_history, accuracy_history = training_loop(
+            train_data, val_data, config, n_epochs=3, batch_size=4, patience=10
+        )
+
+        assert len(cost_history) == 3
+        assert len(accuracy_history) == 3
+        assert cost_history == pytest.approx(costs)
+        assert accuracy_history == pytest.approx(accs)
+        # best accuracy was epoch 2 (0.8)
+        assert isinstance(best_thetas, list)
+        assert len(best_thetas) == config.n_params
+
+    def test_early_stopping_triggers_after_patience(self, monkeypatch):
+        """Training stops after `patience` epochs with no improvement."""
+        # Accuracy improves at epoch 0, then stagnates for 5 epochs
+        accs = [0.5, 0.8, 0.7, 0.7, 0.7, 0.7, 0.7, 0.99]
+        costs = [1.0] * len(accs)
+        fake_epoch, fake_predict = self._make_fake_train_epoch(costs, accs)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", fake_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        best_thetas, cost_history, accuracy_history = training_loop(
+            train_data, val_data, config, n_epochs=20, batch_size=4, patience=5
+        )
+
+        # Should stop at epoch 7 (index 6): 5 epochs without improvement after epoch 1
+        assert len(cost_history) == 7
+        assert len(accuracy_history) == 7
+        # Should never reach the 0.99 accuracy at index 7
+        assert 0.99 not in accuracy_history
+
+    def test_returns_best_thetas_not_last(self, monkeypatch):
+        """best_thetas corresponds to the epoch with highest val accuracy, not the last epoch."""
+        accs = [0.5, 0.9, 0.6, 0.6, 0.6, 0.6, 0.6]
+        costs = [1.0] * len(accs)
+
+        epoch_thetas = []
+        epoch_idx = [0]
+
+        def tracking_epoch(thetas, train_features, train_labels, batch_size, optimizer):
+            updated = [float(epoch_idx[0] + 1)] * len(thetas)
+            epoch_thetas.append(list(updated))
+            epoch_idx[0] += 1
+            return updated, costs[epoch_idx[0] - 1]
+
+        call_idx = [0]
+
+        def fake_predict(thetas, features_array):
+            acc = accs[call_idx[0]]
+            n = len(features_array)
+            n_correct = int(round(acc * n))
+            preds = [0] * n_correct + [1] * (n - n_correct)
+            call_idx[0] += 1
+            return preds
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", tracking_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        best_thetas, _, accuracy_history = training_loop(
+            train_data, val_data, config, n_epochs=20, batch_size=4, patience=5
+        )
+
+        # Best accuracy was at epoch 1 (0.9), so best_thetas should be epoch 1's thetas
+        assert best_thetas == epoch_thetas[1]
+
+    def test_no_early_stop_when_accuracy_keeps_improving(self, monkeypatch):
+        """All n_epochs run when accuracy keeps improving."""
+        n_epochs = 8
+        accs = [0.1 * (i + 1) for i in range(n_epochs)]
+        costs = [1.0 - 0.1 * i for i in range(n_epochs)]
+        fake_epoch, fake_predict = self._make_fake_train_epoch(costs, accs)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", fake_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        _, cost_history, accuracy_history = training_loop(
+            train_data, val_data, config, n_epochs=n_epochs, batch_size=4, patience=5
+        )
+
+        assert len(cost_history) == n_epochs
+        assert len(accuracy_history) == n_epochs
+
+    def test_patience_equals_one(self, monkeypatch):
+        """With patience=1, stops immediately after any non-improvement."""
+        accs = [0.8, 0.7, 0.99]
+        costs = [1.0] * len(accs)
+        fake_epoch, fake_predict = self._make_fake_train_epoch(costs, accs)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", fake_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        _, cost_history, accuracy_history = training_loop(
+            train_data, val_data, config, n_epochs=10, batch_size=4, patience=1
+        )
+
+        assert len(cost_history) == 2
+        assert len(accuracy_history) == 2
+
+    def test_single_epoch(self, monkeypatch):
+        """With n_epochs=1, runs exactly one epoch."""
+        fake_epoch, fake_predict = self._make_fake_train_epoch([0.5], [0.7])
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", fake_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        best_thetas, cost_history, accuracy_history = training_loop(
+            train_data, val_data, config, n_epochs=1, batch_size=4, patience=5
+        )
+
+        assert len(cost_history) == 1
+        assert len(accuracy_history) == 1
+        assert len(best_thetas) == config.n_params
+
+    def test_cost_history_matches_train_epoch_costs(self, monkeypatch):
+        """cost_history faithfully records the avg_cost from each train_epoch call."""
+        expected_costs = [0.9, 0.7, 0.5, 0.3]
+        accs = [0.5, 0.6, 0.7, 0.8]
+        fake_epoch, fake_predict = self._make_fake_train_epoch(expected_costs, accs)
+
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.train_epoch", fake_epoch
+        )
+        monkeypatch.setattr(
+            "readout_classifier.src.vqc_classifier.predict_batch", fake_predict
+        )
+
+        train_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        val_data = ([[0.0, 0.0]] * 10, [0] * 10)
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=1)
+
+        _, cost_history, _ = training_loop(
+            train_data, val_data, config, n_epochs=4, batch_size=4, patience=10
+        )
+
+        assert cost_history == pytest.approx(expected_costs)
+
+
+class TestTrainingLoopIntegration:
+    """Integration tests for training_loop on real SNR=4.0 IQ data.
+
+    These tests use small sample sizes (40 train / 20 val) and limited
+    optimizer iterations to keep wall-clock time manageable while still
+    exercising the full quantum simulation stack.
+    """
+
+    @staticmethod
+    def _make_snr4_data(n_train=40, n_val=20, seed=42):
+        """Generate and preprocess SNR=4.0 IQ data for train/val splits."""
+        from readout_classifier.src.iq_simulator import generate_iq_data
+        from readout_classifier.src.preprocessor import angle_encode, standardise
+
+        params = {
+            "SNR": 4.0,
+            "sigma": 1.0,
+            "p_thermal": 0.0,
+            "T1_over_tmeas": 1e6,
+            "blob_angle": 0.0,
+            "seed": seed,
+        }
+
+        iq_train, labels_train = generate_iq_data(n_train, params)
+        scaled_train, scaler = standardise(iq_train)
+        features_train = angle_encode(scaled_train)
+
+        params_val = {**params, "seed": seed + 1}
+        iq_val, labels_val = generate_iq_data(n_val, params_val)
+        scaled_val, _ = standardise(iq_val, scaler=scaler)
+        features_val = angle_encode(scaled_val)
+
+        train_data = (features_train.tolist(), labels_train.tolist())
+        val_data = (features_val.tolist(), labels_val.tolist())
+        return train_data, val_data
+
+    def test_cost_decreases_over_first_5_epochs(self):
+        """On SNR=4.0 data, cost shows a net decrease over the first 5 epochs.
+
+        Strategy: generate 40 training / 20 validation samples at SNR=4.0,
+        preprocess through standardise → angle_encode, then run training_loop
+        for 10 epochs with batch_size=16. Mini-batch training naturally
+        introduces per-epoch cost fluctuations due to shuffling, so we check
+        the overall trend: the cost at epoch 4 must be lower than the cost
+        at epoch 0, and the average cost over epochs 3-4 must be lower than
+        the average cost over epochs 0-1.
+
+        Expected: cost_history[4] < cost_history[0] AND
+                  mean(cost_history[3:5]) < mean(cost_history[0:2]).
+        """
+        np.random.seed(7)
+        train_data, val_data = self._make_snr4_data()
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=20)
+
+        _, cost_history, _ = training_loop(
+            train_data, val_data, config,
+            n_epochs=10, batch_size=16, patience=10,
+        )
+
+        assert cost_history[4] < cost_history[0], (
+            f"Cost did not decrease from epoch 0 to epoch 4: "
+            f"{cost_history[0]:.4f} -> {cost_history[4]:.4f}"
+        )
+        early_avg = np.mean(cost_history[0:2])
+        later_avg = np.mean(cost_history[3:5])
+        assert later_avg < early_avg, (
+            f"Average cost over epochs 3-4 ({later_avg:.4f}) is not lower "
+            f"than average cost over epochs 0-1 ({early_avg:.4f})"
+        )
+
+    def test_final_val_accuracy_above_60_percent(self):
+        """On SNR=4.0 data, best validation accuracy exceeds 60% (above chance).
+
+        Strategy: generate 40 training / 20 validation samples at SNR=4.0,
+        run training_loop for 10 epochs. SNR=4.0 blobs are well-separated
+        enough that even a small VQC should learn a decision boundary better
+        than random guessing (50%).
+
+        Expected: max(accuracy_history) > 0.60.
+        """
+        np.random.seed(7)
+        train_data, val_data = self._make_snr4_data()
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=20)
+
+        _, _, accuracy_history = training_loop(
+            train_data, val_data, config,
+            n_epochs=10, batch_size=16, patience=10,
+        )
+
+        best_accuracy = max(accuracy_history)
+        assert best_accuracy > 0.60, (
+            f"Best validation accuracy {best_accuracy:.2%} did not exceed 60%"
+        )
+
+    def test_early_stopping_with_patience_1(self):
+        """With patience=1, training stops as soon as accuracy fails to improve.
+
+        Strategy: run training_loop with patience=1 on SNR=4.0 data. The
+        first epoch sets a baseline accuracy; as soon as the next epoch does
+        not beat it, training halts. This should produce fewer epochs than
+        n_epochs=10.
+
+        Expected: len(cost_history) < 10.
+        """
+        np.random.seed(7)
+        train_data, val_data = self._make_snr4_data()
+        config = ClassifierConfig(n_qubits=3, n_layers=2, max_iterations=20)
+
+        best_thetas, cost_history, accuracy_history = training_loop(
+            train_data, val_data, config,
+            n_epochs=10, batch_size=16, patience=1,
+        )
+
+        assert len(cost_history) < 10, (
+            f"Expected early stopping with patience=1 but ran all "
+            f"{len(cost_history)} epochs"
+        )
+        assert len(cost_history) == len(accuracy_history)
+        assert len(best_thetas) == config.n_params
